@@ -5,9 +5,7 @@ services:
     environment:
       POSTGRES_DB: ledger_recon
       POSTGRES_USER: recon_user
-      POSTGRES_PASSWORD: recon_pass
-    ports:
-      - "5432:5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -18,8 +16,6 @@ services:
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -36,8 +32,8 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      DATABASE_URL: postgresql+asyncpg://recon_user:recon_pass@postgres:5432/ledger_recon
-      SYNC_DATABASE_URL: postgresql://recon_user:recon_pass@postgres:5432/ledger_recon
+      DATABASE_URL: postgresql+asyncpg://recon_user:${POSTGRES_PASSWORD}@postgres:5432/ledger_recon
+      SYNC_DATABASE_URL: postgresql://recon_user:${POSTGRES_PASSWORD}@postgres:5432/ledger_recon
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -56,8 +52,8 @@ services:
     volumes:
       - ./backend:/app
     environment:
-      DATABASE_URL: postgresql+asyncpg://recon_user:recon_pass@postgres:5432/ledger_recon
-      SYNC_DATABASE_URL: postgresql://recon_user:recon_pass@postgres:5432/ledger_recon
+      DATABASE_URL: postgresql+asyncpg://recon_user:${POSTGRES_PASSWORD}@postgres:5432/ledger_recon
+      SYNC_DATABASE_URL: postgresql://recon_user:${POSTGRES_PASSWORD}@postgres:5432/ledger_recon
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
