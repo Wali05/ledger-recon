@@ -1,0 +1,30 @@
+# Environments
+.env
+.env.local
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Node / JS
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# System
+.DS_Store
+Thumbs.db
+
+# Project-specific generated files
+test_ledger.csv
+test_statement.csv
+reconciliation_breaks_*.csv
+ground_truth.csv
