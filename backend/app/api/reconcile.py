@@ -139,6 +139,11 @@ async def trigger_reconciliation(
     """Trigger a new reconciliation run."""
     job_id = uuid.uuid4()
 
+    if source == "uploaded":
+        await session.execute(
+            text("DELETE FROM reconciliation_breaks WHERE source = 'uploaded'")
+        )
+
     await session.execute(
         text("""
             INSERT INTO reconciliation_jobs (job_id, status, started_at, source)
