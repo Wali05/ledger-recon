@@ -1,0 +1,4 @@
+transaction_id,account_id,amount,currency,timestamp,description,status
+TXN_TEST_1,ACC_1,1000.00,USD,2026-07-06T10:00:00Z,Test Transaction 1,settled
+TXN_TEST_2,ACC_1,500.00,USD,2026-07-06T10:15:00Z,Test Transaction 2,settled
+TXN_TEST_3,ACC_1,200.00,USD,2026-07-06T10:30:00Z,Test Missing External,settled

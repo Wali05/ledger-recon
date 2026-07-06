@@ -1,0 +1,4 @@
+transaction_id,amount,timestamp,description
+TXN_TEST_1,1000.00,2026-07-06T10:00:00Z,Test Transaction 1 - Matched
+TXN_TEST_2,490.00,2026-07-06T10:15:00Z,Test Transaction 2 - Amount Mismatch (fee)
+TXN_TEST_4,150.00,2026-07-06T11:00:00Z,Test Missing Internal
