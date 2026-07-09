@@ -22,11 +22,11 @@ from decimal import Decimal
 from pathlib import Path
 
 # Add backend to sys.path
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.engine.matcher import load_internal_ledger, load_external_statement, run_matching
 
-DATA_DIR = Path(__file__).parent / "backend" / "data"
+DATA_DIR = Path(__file__).parent.parent / "backend" / "data"
 
 PASS = "[PASS]"
 FAIL = "[FAIL]"

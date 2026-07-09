@@ -347,13 +347,16 @@ async def explain_break_with_ai(
     minute_key = f"ai_rate_limit:min:{now.strftime('%Y-%m-%d:%H:%M')}"
     day_key = f"ai_rate_limit:day:{now.strftime('%Y-%m-%d')}"
 
+    # NX ensures the TTL is only set on the first increment of each window, so the
+    # expiry isn't pushed forward on every request (which would make the window slide
+    # indefinitely and never reset the count).
     async with redis_client.pipeline(transaction=True) as pipe:
         pipe.incr(minute_key)
-        pipe.expire(minute_key, 60)
+        pipe.expire(minute_key, 60, nx=True)
         pipe.incr(day_key)
-        pipe.expire(day_key, 86400)
+        pipe.expire(day_key, 86400, nx=True)
         res = await pipe.execute()
-    
+
     min_count = res[0]
     day_count = res[2]
 

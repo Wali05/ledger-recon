@@ -14,9 +14,9 @@ import os
 from pathlib import Path
 
 # Add backend to path
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
-DATA_DIR = Path(__file__).parent / "backend" / "data"
+DATA_DIR = Path(__file__).parent.parent / "backend" / "data"
 
 from app.engine.matcher import load_internal_ledger, load_external_statement, run_matching
 from collections import Counter

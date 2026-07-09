@@ -23,7 +23,10 @@ WHY CELERY/REDIS INSTEAD OF SYNCHRONOUS PROCESSING:
     - The actual heavy work runs in an isolated worker process.
     - The web tier remains responsive; clients poll GET /reconcile/status/{job_id}.
     - The worker can be scaled independently of the API tier.
-    - Failed tasks are retried automatically without client involvement.
+    - If a worker is lost mid-task, the message is redelivered (task_acks_late +
+      task_reject_on_worker_lost). Note: application-level errors are NOT auto-retried
+      today — the task records the failure on the job row and re-raises. Auto-retry
+      would be safe to add later since the insert is idempotent (see ON CONFLICT below).
 
   Why Redis as the broker (vs RabbitMQ)?
     - Simpler ops for a single-node development stack.
@@ -51,7 +54,8 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
-    # Retry failed tasks once with a 10-second delay
+    # Redeliver the message if the worker dies mid-task (not the same as retrying on
+    # application errors — see reconciliation_task, which records the failure instead).
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,

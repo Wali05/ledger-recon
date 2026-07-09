@@ -10,7 +10,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "backend"))
 
 from app.engine.matcher import load_internal_ledger, load_external_statement, run_matching
 
@@ -49,8 +49,10 @@ LIMITATIONS = {
         "In production: international wires, holiday weekends can exceed 3 days (missed = FN)."
     ),
     "FX_ROUNDING": (
-        "Requires non-USD currency flag AND delta <= $0.05. Perfect on synthetic data "
-        "because both conditions are satisfied by design. In production: if the internal "
+        "Requires non-USD currency flag AND delta <= $0.05. Intentionally NOT perfect on "
+        "synthetic data: the generator plants three noise categories (FX_FP_CANDIDATES, "
+        "FX_LARGE_DELTA, FX_USD_NORMALISED) that defeat the detector on purpose, to avoid a "
+        "circular 1.0 F1. Expected lower P/R here is by design. In production: if the internal "
         "system normalises to USD at booking, currency='USD' -> all reclassified AMOUNT_MISMATCH."
     ),
 }

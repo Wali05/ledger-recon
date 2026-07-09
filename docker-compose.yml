@@ -38,6 +38,7 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       GEMINI_API_KEY: ${GEMINI_API_KEY}
       CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
     depends_on:
       postgres:
         condition: service_healthy

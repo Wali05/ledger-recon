@@ -9,6 +9,7 @@ POST /reconcile/upload/statement — Upload external statement CSV
 
 import csv
 import io
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -22,6 +23,7 @@ from app.schemas import ReconcileRunResponse, JobStatusResponse, UploadResponse
 from app.tasks import reconciliation_task
 
 router = APIRouter(prefix="/reconcile", tags=["reconciliation"])
+logger = logging.getLogger(__name__)
 
 
 def _utcnow():
@@ -54,12 +56,12 @@ async def upload_ledger(
 
     inserted = 0
     skipped = 0
-    
+
     await session.execute(text("TRUNCATE TABLE uploaded_ledger"))
-    
-    for row in reader:
+
+    for i, row in enumerate(reader, start=1):
         try:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     INSERT INTO uploaded_ledger
                     (transaction_id, account_id, amount, currency, timestamp, description, status)
@@ -76,10 +78,15 @@ async def upload_ledger(
                     "stat": row.get("status", "settled"),
                 }
             )
-            inserted += 1
+            # rowcount is 0 when ON CONFLICT skipped a duplicate transaction_id.
+            if result.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
         except Exception as e:
             skipped += 1
-            
+            logger.warning("Skipping ledger row %d: %s", i, e)
+
     await session.commit()
     return UploadResponse(message="Ledger uploaded successfully", rows_inserted=inserted, rows_skipped=skipped)
 
@@ -104,12 +111,12 @@ async def upload_statement(
 
     inserted = 0
     skipped = 0
-    
+
     await session.execute(text("TRUNCATE TABLE uploaded_statement"))
-    
-    for row in reader:
+
+    for i, row in enumerate(reader, start=1):
         try:
-            await session.execute(
+            result = await session.execute(
                 text("""
                     INSERT INTO uploaded_statement
                     (transaction_id, amount, timestamp, description)
@@ -123,10 +130,15 @@ async def upload_statement(
                     "desc": row.get("description", ""),
                 }
             )
-            inserted += 1
-        except Exception:
+            # rowcount is 0 when ON CONFLICT skipped a duplicate transaction_id.
+            if result.rowcount > 0:
+                inserted += 1
+            else:
+                skipped += 1
+        except Exception as e:
             skipped += 1
-            
+            logger.warning("Skipping statement row %d: %s", i, e)
+
     await session.commit()
     return UploadResponse(message="Statement uploaded successfully", rows_inserted=inserted, rows_skipped=skipped)
 
@@ -136,7 +148,18 @@ async def trigger_reconciliation(
     source: str = Query("synthetic", description="Source of data to reconcile: synthetic or uploaded"),
     session: AsyncSession = Depends(get_async_session),
 ):
-    """Trigger a new reconciliation run."""
+    """Trigger a new reconciliation run.
+
+    Idempotency note: the synthetic path relies on the UNIQUE(transaction_id,
+    break_type, source) constraint + ON CONFLICT DO NOTHING, so re-runs never
+    duplicate breaks or clobber manual resolutions.
+
+    The uploaded path is different BY DESIGN: each uploaded run replaces the whole
+    dataset, so we clear the previous uploaded breaks first. Without this, stale
+    breaks from a prior upload would linger after a new file is uploaded. This does
+    mean resolutions on old uploaded breaks are discarded — acceptable because the
+    underlying uploaded data has been replaced.
+    """
     job_id = uuid.uuid4()
 
     if source == "uploaded":
@@ -190,6 +213,6 @@ async def get_job_status(
         started_at=row["started_at"],
         finished_at=row["finished_at"],
         error_message=row["error_message"],
-        transactions_processed=int(row["transactions_processed"]) if row["transactions_processed"] else None,
-        breaks_detected=int(row["breaks_detected"]) if row["breaks_detected"] else None,
+        transactions_processed=int(row["transactions_processed"]) if row["transactions_processed"] is not None else None,
+        breaks_detected=int(row["breaks_detected"]) if row["breaks_detected"] is not None else None,
     )
