@@ -3,6 +3,11 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import {
+  Play, Upload, Download, Sparkles, Check, X, ChevronLeft, ChevronRight,
+  Scale, FileText, Layers, Activity, TriangleAlert, CircleCheck, Percent,
+  FileSearch, Landmark,
+} from "lucide-react";
+import {
   triggerReconciliation, getJobStatus, getBreaks, getStats, resolveBreak, getBreak,
   uploadLedger, uploadStatement, explainBreakWithAI, exportBreaks
 } from "./api";
@@ -10,13 +15,13 @@ import "./index.css";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const BREAK_COLORS = {
-  AMOUNT_MISMATCH: "#f59e0b",
-  MISSING_INTERNAL: "#ef4444",
-  MISSING_EXTERNAL: "#f87171",
-  DUPLICATE: "#8b5cf6",
-  TIMING_LAG: "#06b6d4",
-  FX_ROUNDING: "#10b981",
-  UNKNOWN: "#64748b",
+  AMOUNT_MISMATCH: "#b97d18",
+  MISSING_INTERNAL: "#c0442e",
+  MISSING_EXTERNAL: "#d97757",
+  DUPLICATE: "#8560ad",
+  TIMING_LAG: "#2596a3",
+  FX_ROUNDING: "#3d8a5f",
+  UNKNOWN: "#9a9384",
 };
 
 const BREAK_TYPE_OPTIONS = [
@@ -36,7 +41,9 @@ function Toast({ toasts }) {
     <div className="toast-container">
       {toasts.map((t) => (
         <div key={t.id} className={`toast ${t.type}`}>
-          <span>{t.type === "success" ? "✓" : "✗"}</span>
+          <span className="toast-icon">
+            {t.type === "success" ? <Check size={14} strokeWidth={3} /> : <X size={14} strokeWidth={3} />}
+          </span>
           {t.message}
         </div>
       ))}
@@ -107,52 +114,46 @@ function BreakDetailModal({ breakId, onClose, onResolved, addToast }) {
       <div className="modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <span className="modal-title">Break Detail</span>
-          <button className="modal-close" onClick={onClose}>✕</button>
+          <button className="modal-close" onClick={onClose} aria-label="Close">
+            <X size={16} />
+          </button>
         </div>
         <div className="modal-body">
           {!br ? (
             <div className="loading-wrap"><div className="spinner" /></div>
           ) : (
             <>
-              <div style={{ marginBottom: 20 }}>
+              <div style={{ marginBottom: 20, display: "flex", gap: 8, alignItems: "center" }}>
                 <BreakTypeBadge type={br.break_type} />
-                {br.resolved && (
-                  <span className="badge badge-resolved" style={{ marginLeft: 8 }}>Resolved</span>
-                )}
+                {br.resolved && <span className="badge badge-resolved">Resolved</span>}
               </div>
               <div className="detail-grid">
                 <div className="detail-item">
                   <label>Transaction ID</label>
-                  <span style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>
-                    {br.transaction_id}
-                  </span>
+                  <span className="mono">{br.transaction_id}</span>
                 </div>
                 <div className="detail-item">
                   <label>Break ID</label>
-                  <span style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>
-                    {br.break_id}
-                  </span>
+                  <span className="mono">{br.break_id}</span>
                 </div>
                 <div className="detail-item">
                   <label>Internal Amount</label>
-                  <span>{fmtAmt(br.internal_amount)}</span>
+                  <span className="amount">{fmtAmt(br.internal_amount)}</span>
                 </div>
                 <div className="detail-item">
                   <label>External Amount</label>
-                  <span>{fmtAmt(br.external_amount)}</span>
+                  <span className="amount">{fmtAmt(br.external_amount)}</span>
                 </div>
                 <div className="detail-item">
                   <label>Delta</label>
                   <span
-                    style={{
-                      color:
-                        parseFloat(br.delta_amount) > 0
-                          ? "var(--accent-green)"
-                          : parseFloat(br.delta_amount) < 0
-                          ? "var(--accent-red)"
-                          : "inherit",
-                      fontWeight: 600,
-                    }}
+                    className={`amount ${
+                      parseFloat(br.delta_amount) > 0
+                        ? "amount-positive"
+                        : parseFloat(br.delta_amount) < 0
+                        ? "amount-negative"
+                        : ""
+                    }`}
                   >
                     {br.delta_amount !== null && br.delta_amount !== undefined
                       ? `${parseFloat(br.delta_amount) >= 0 ? "+" : ""}${parseFloat(br.delta_amount).toFixed(4)}`
@@ -177,31 +178,29 @@ function BreakDetailModal({ breakId, onClose, onResolved, addToast }) {
                     <span>{fmtDate(br.resolved_at)}</span>
                   </div>
                 )}
-                <div className="detail-item" style={{ gridColumn: "1/-1" }}>
+                <div className="detail-item span-2">
                   <label>Description</label>
                   <span>{fmt(br.description)}</span>
                 </div>
 
-                <div className="detail-item" style={{ gridColumn: "1/-1", marginTop: "12px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                    <label style={{ margin: 0 }}>✨ AI Resolution Assistant</label>
+                <div className="ai-panel">
+                  <div className="ai-panel-head">
+                    <label><Sparkles size={14} /> AI Resolution Assistant</label>
                     {!aiExplanation && (
-                      <button 
-                        className="action-btn" 
-                        style={{ padding: "4px 10px", fontSize: "0.8rem", background: "var(--bg-secondary)", border: "1px solid var(--border)" }}
+                      <button
+                        className="action-btn"
+                        style={{ padding: "5px 12px", fontSize: "0.8rem" }}
                         onClick={handleAskAi}
                         disabled={askingAi}
                       >
-                        {askingAi ? "Analyzing..." : "Ask AI to Explain"}
+                        {askingAi ? "Analyzing…" : "Ask AI to Explain"}
                       </button>
                     )}
                   </div>
                   {aiExplanation ? (
-                    <div style={{ background: "rgba(59, 130, 246, 0.08)", padding: "12px", borderRadius: "6px", border: "1px solid rgba(59, 130, 246, 0.2)", fontSize: "0.9rem", color: "var(--text-primary)", lineHeight: 1.5 }}>
-                      {aiExplanation}
-                    </div>
+                    <div className="ai-answer">{aiExplanation}</div>
                   ) : (
-                    <div style={{ fontSize: "0.85rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                    <div className="ai-hint">
                       Click the button above to ask Gemini to analyze this break.
                     </div>
                   )}
@@ -211,14 +210,15 @@ function BreakDetailModal({ breakId, onClose, onResolved, addToast }) {
           )}
         </div>
         <div className="modal-footer">
-          <button className="action-btn" onClick={onClose}>Close</button>
+          <button className="action-btn ghost" onClick={onClose}>Close</button>
           {br && !br.resolved && (
             <button
               className="action-btn success"
               onClick={handleResolve}
               disabled={resolving}
             >
-              {resolving ? "Resolving…" : "✓ Mark Resolved"}
+              <Check size={15} strokeWidth={2.5} />
+              {resolving ? "Resolving…" : "Mark Resolved"}
             </button>
           )}
         </div>
@@ -278,7 +278,7 @@ function ReconcileControl({ source, onJobComplete, addToast }) {
       setTriggering(false);
     }
   };
-  
+
   const handleUpload = async () => {
     if (!ledgerFile || !statementFile) {
       addToast("Please select both files", "error");
@@ -313,31 +313,30 @@ function ReconcileControl({ source, onJobComplete, addToast }) {
           Runs as an async background job — the API returns immediately.
         </p>
         {source === "synthetic" && (
-          <div style={{ marginTop: 12, padding: 12, backgroundColor: "rgba(59, 130, 246, 0.1)", borderLeft: "4px solid #3b82f6", borderRadius: 4, fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+          <div className="note-callout">
             <strong>Note to Viewers:</strong> The data shown in the "Synthetic Dataset" mode is entirely fictional. It was procedurally generated by a Python script (<code>backend/data/generate_data.py</code>) to simulate 5,000+ realistic financial transactions, including deliberately planted edge cases like currency exchange (FX) rounding errors, timing lags, and missing rows. This allows us to rigorously evaluate the engine's accuracy safely.
           </div>
         )}
       </div>
-      
+
       {source === "uploaded" && (
-        <div style={{ marginBottom: 20, display: "flex", gap: 20, flexWrap: "wrap", background: "var(--bg-secondary)", padding: 16, borderRadius: 8, border: "1px solid var(--border)" }}>
-          <div>
-            <label style={{display: "block", marginBottom: 8, fontSize: "0.9rem", fontWeight: 600}}>Internal Ledger CSV</label>
+        <div className="upload-panel">
+          <div className="upload-field">
+            <label><FileText size={15} /> Internal Ledger CSV</label>
             <input type="file" accept=".csv" onChange={(e) => setLedgerFile(e.target.files[0])} />
           </div>
-          <div>
-            <label style={{display: "block", marginBottom: 8, fontSize: "0.9rem", fontWeight: 600}}>External Statement CSV</label>
+          <div className="upload-field">
+            <label><Landmark size={15} /> External Statement CSV</label>
             <input type="file" accept=".csv" onChange={(e) => setStatementFile(e.target.files[0])} />
           </div>
-          <div style={{ display: "flex", alignItems: "flex-end" }}>
-            <button className="action-btn" onClick={handleUpload} disabled={uploading}>
-              {uploading ? "Uploading..." : "Upload Files"}
-            </button>
-          </div>
+          <button className="action-btn" onClick={handleUpload} disabled={uploading}>
+            <Upload size={15} />
+            {uploading ? "Uploading…" : "Upload Files"}
+          </button>
         </div>
       )}
 
-      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+      <div className="run-row">
         {jobStatus && (
           <div className="job-status">
             <div className={`status-dot ${jobStatus.status}`} />
@@ -355,7 +354,8 @@ function ReconcileControl({ source, onJobComplete, addToast }) {
           disabled={triggering || jobStatus?.status === "running"}
           id="btn-run-reconciliation"
         >
-          {triggering ? "Queuing…" : "▶ Run Reconciliation"}
+          <Play size={15} strokeWidth={2.5} />
+          {triggering ? "Queuing…" : "Run Reconciliation"}
         </button>
       </div>
     </div>
@@ -367,11 +367,11 @@ function StatsCards({ stats, source }) {
   if (source === "uploaded") {
     return (
       <div className="stats-grid" style={{ gridTemplateColumns: "1fr" }}>
-        <div className="stat-card" style={{ "--accent-color": "#64748b", textAlign: "center", padding: "30px 20px" }}>
-          <div style={{ fontSize: "1.2rem", fontWeight: 600, color: "var(--text-secondary)" }}>
+        <div className="stat-card stat-empty" style={{ "--accent-color": "#9a9384" }}>
+          <div className="stat-empty-title">
             Unevaluated — no ground truth available for uploaded data.
           </div>
-          <div style={{ fontSize: "0.95rem", color: "var(--text-muted)", marginTop: 8 }}>
+          <div className="stat-empty-sub">
             Precision and recall metrics are only available for the evaluated synthetic dataset.
           </div>
         </div>
@@ -383,23 +383,38 @@ function StatsCards({ stats, source }) {
   const rate = stats.resolution_rate_pct ?? 0;
   return (
     <div className="stats-grid">
-      <div className="stat-card" style={{ "--accent-color": "#3b82f6" }}>
-        <div className="stat-value">{stats.total_transactions_in_ledger?.toLocaleString() ?? "—"}</div>
+      <div className="stat-card" style={{ "--accent-color": "#4f6db8" }}>
+        <div className="stat-head">
+          <div className="stat-value">{stats.total_transactions_in_ledger?.toLocaleString() ?? "—"}</div>
+          <div className="stat-icon"><Layers size={19} /></div>
+        </div>
         <div className="stat-label">Total Ledger Txns</div>
       </div>
-      <div className="stat-card" style={{ "--accent-color": "#ef4444" }}>
-        <div className="stat-value">{stats.total_breaks_detected?.toLocaleString() ?? "—"}</div>
+      <div className="stat-card" style={{ "--accent-color": "#c0442e" }}>
+        <div className="stat-head">
+          <div className="stat-value">{stats.total_breaks_detected?.toLocaleString() ?? "—"}</div>
+          <div className="stat-icon"><TriangleAlert size={19} /></div>
+        </div>
         <div className="stat-label">Breaks Detected</div>
       </div>
-      <div className="stat-card" style={{ "--accent-color": "#10b981" }}>
-        <div className="stat-value">{stats.total_breaks_resolved?.toLocaleString() ?? "—"}</div>
+      <div className="stat-card" style={{ "--accent-color": "#3d8a5f" }}>
+        <div className="stat-head">
+          <div className="stat-value">{stats.total_breaks_resolved?.toLocaleString() ?? "—"}</div>
+          <div className="stat-icon"><CircleCheck size={19} /></div>
+        </div>
         <div className="stat-label">Breaks Resolved</div>
       </div>
-      <div className="stat-card" style={{ "--accent-color": "#8b5cf6" }}>
-        <div className="stat-value">{rate.toFixed(1)}%</div>
+      <div className="stat-card" style={{ "--accent-color": "#8560ad" }}>
+        <div className="stat-head">
+          <div className="stat-value">{rate.toFixed(1)}%</div>
+          <div className="stat-icon"><Percent size={19} /></div>
+        </div>
         <div className="stat-label">Resolution Rate</div>
-        <div className="progress-bar" style={{ marginTop: 10 }}>
-          <div className="progress-fill" style={{ width: `${Math.min(rate, 100)}%`, background: "linear-gradient(90deg,#8b5cf6,#6d28d9)" }} />
+        <div className="progress-bar" style={{ marginTop: 12 }}>
+          <div
+            className="progress-fill"
+            style={{ width: `${Math.min(rate, 100)}%`, background: "linear-gradient(90deg,#8560ad,#6d4c93)" }}
+          />
         </div>
       </div>
     </div>
@@ -420,10 +435,10 @@ function BreaksChart({ stats }) {
   const CustomTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
     return (
-      <div style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 8, padding: "12px 16px" }}>
-        <div style={{ fontWeight: 700, marginBottom: 6, color: "var(--text-primary)" }}>{label}</div>
+      <div className="chart-tooltip">
+        <div className="tt-label">{label}</div>
         {payload.map((p) => (
-          <div key={p.name} style={{ color: p.fill, fontSize: "0.85rem" }}>
+          <div key={p.name} className="tt-row" style={{ color: p.fill }}>
             {p.name}: {p.value}
           </div>
         ))}
@@ -434,26 +449,26 @@ function BreaksChart({ stats }) {
   return (
     <div className="chart-card">
       <div className="chart-title">Breaks by Type</div>
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={230}>
         <BarChart data={data} barCategoryGap="30%">
           <XAxis
             dataKey="name"
-            tick={{ fill: "var(--text-secondary)", fontSize: 11 }}
+            tick={{ fill: "#6b6557", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
           />
           <YAxis
-            tick={{ fill: "var(--text-secondary)", fontSize: 11 }}
+            tick={{ fill: "#6b6557", fontSize: 11 }}
             axisLine={false}
             tickLine={false}
           />
-          <Tooltip content={<CustomTooltip />} />
-          <Bar dataKey="unresolved" name="Unresolved" radius={[4, 4, 0, 0]}>
+          <Tooltip content={<CustomTooltip />} cursor={{ fill: "rgba(217, 119, 87, 0.07)" }} />
+          <Bar dataKey="unresolved" name="Unresolved" radius={[6, 6, 0, 0]}>
             {data.map((entry) => (
-              <Cell key={entry.raw} fill={BREAK_COLORS[entry.raw] ?? "#64748b"} opacity={0.85} />
+              <Cell key={entry.raw} fill={BREAK_COLORS[entry.raw] ?? "#9a9384"} opacity={0.9} />
             ))}
           </Bar>
-          <Bar dataKey="resolved" name="Resolved" radius={[4, 4, 0, 0]} fill="rgba(255,255,255,0.12)" />
+          <Bar dataKey="resolved" name="Resolved" radius={[6, 6, 0, 0]} fill="rgba(41, 37, 30, 0.14)" />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -493,7 +508,7 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
       const params = { source };
       if (typeFilter !== "ALL") params.break_type = typeFilter;
       if (resolvedFilter !== "") params.resolved = resolvedFilter;
-      
+
       const blob = await exportBreaks(params);
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -537,7 +552,10 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
   return (
     <div className="table-wrap">
       <div className="table-header">
-        <span className="table-title">Reconciliation Breaks <span style={{ color: "var(--text-muted)", fontWeight: 400, fontSize: "0.85rem" }}>({total.toLocaleString()} total)</span></span>
+        <span className="table-title">
+          Reconciliation Breaks
+          <span className="table-count">({total.toLocaleString()} total)</span>
+        </span>
         <div className="table-filters">
           <select
             className="filter-select"
@@ -559,13 +577,13 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
             <option value="false">Unresolved</option>
             <option value="true">Resolved</option>
           </select>
-          <button 
-            className="action-btn" 
+          <button
+            className="action-btn"
             onClick={handleExport}
-            style={{ marginLeft: 8 }}
             title="Download CSV"
           >
-            📥 Export CSV
+            <Download size={15} />
+            Export CSV
           </button>
         </div>
       </div>
@@ -574,7 +592,7 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
         <div className="loading-wrap"><div className="spinner" /><span>Loading breaks…</span></div>
       ) : sorted.length === 0 ? (
         <div className="empty-state">
-          <div className="icon">📊</div>
+          <div className="icon"><FileSearch size={26} /></div>
           <h3>No breaks found</h3>
           <p>Run a reconciliation job to detect discrepancies.</p>
         </div>
@@ -632,6 +650,7 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
                     <td>
                       <button
                         className="action-btn"
+                        style={{ padding: "6px 13px", fontSize: "0.8rem" }}
                         onClick={() => onSelectBreak(br.break_id)}
                         id={`btn-view-break-${br.break_id}`}
                       >
@@ -653,10 +672,10 @@ function BreaksTable({ source, onSelectBreak, refreshSignal }) {
           </span>
           <div className="pagination-btns">
             <button className="action-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>
-              ← Prev
+              <ChevronLeft size={15} /> Prev
             </button>
             <button className="action-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page === totalPages}>
-              Next →
+              Next <ChevronRight size={15} />
             </button>
           </div>
         </div>
@@ -703,37 +722,36 @@ export default function App() {
       {/* ── Navbar ── */}
       <nav className="navbar">
         <div className="navbar-brand">
-          <div className="logo-icon">⚖</div>
+          <div className="logo-icon"><Scale size={19} /></div>
           <span>Ledger Recon</span>
         </div>
-        <div style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>
-          Reconciliation Engine v1.0
+        <div className="navbar-meta">
+          <div className="live-dot" />
+          <span>Reconciliation Engine v1.0</span>
         </div>
       </nav>
 
       <main>
         {/* ── Page title ── */}
-        <div style={{ marginBottom: 28, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "16px" }}>
+        <div className="page-head">
           <div>
-            <h1 style={{ fontSize: "1.75rem", fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 6 }}>
-              Reconciliation Dashboard
+            <h1 className="page-title">
+              Reconciliation <em>Dashboard</em>
             </h1>
-            <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem" }}>
+            <p className="page-sub">
               Detect and resolve discrepancies between your internal ledger and external bank statements.
             </p>
           </div>
-          
-          <div style={{ display: "flex", background: "var(--bg-secondary)", borderRadius: 8, padding: 4, border: "1px solid var(--border)" }}>
-            <button 
-              className={`action-btn ${source === "synthetic" ? "primary" : ""}`} 
-              style={{ border: "none", background: source === "synthetic" ? "var(--bg-card)" : "transparent", color: source === "synthetic" ? "var(--text-primary)" : "var(--text-secondary)" }}
+
+          <div className="seg-toggle">
+            <button
+              className={`seg-btn ${source === "synthetic" ? "active" : ""}`}
               onClick={() => { setSource("synthetic"); setStats(null); }}
             >
               Synthetic Dataset
             </button>
-            <button 
-              className={`action-btn ${source === "uploaded" ? "primary" : ""}`} 
-              style={{ border: "none", background: source === "uploaded" ? "var(--bg-card)" : "transparent", color: source === "uploaded" ? "var(--text-primary)" : "var(--text-secondary)" }}
+            <button
+              className={`seg-btn ${source === "uploaded" ? "active" : ""}`}
               onClick={() => { setSource("uploaded"); setStats(null); }}
             >
               Uploaded Data
