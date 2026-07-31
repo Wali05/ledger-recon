@@ -1,327 +1,248 @@
 # Ledger Reconciliation Engine
 
-A production-quality system that detects discrepancies between an internal financial ledger and external bank statements, classifies them by type, serves them via a REST API, and processes large datasets asynchronously via Celery.
+Detects, classifies and explains discrepancies between an internal financial ledger and an external bank statement — the process banks and asset managers call **reconciliation**, and each discrepancy a **break**.
 
-This system models a real-world reconciliation challenge: detecting discrepancies between an internal corporate ledger and an external bank statement. 
-
-## Two Operating Modes
-
-1. **Evaluated Synthetic Data Mode (Default)**: Runs the engine against a deeply modelled synthetic dataset of 5,000+ transactions with 130 carefully planted discrepancies. This dataset includes a pre-generated ground truth label map, allowing us to compute mathematically rigorous Precision, Recall, and F1 scores to evaluate the engine's performance (especially on edge cases like non-USD FX conversions).
-2. **Live CSV Upload Mode**: Users can upload their own internal ledger and external statement CSVs via the web dashboard. The engine runs the exact same matching logic against the uploaded data. Since there is no ground truth map for live uploads, this mode functions purely as an interactive demonstration of the engine's rules (no F1 scores are calculated).
-
-## Architecture Overview
-
----
-
-## Architecture & Data Flow
+Reconciliation is one of the highest-volume back-office problems in financial services. Two systems that are supposed to agree rarely do: fees get deducted in transit, settlements lag, feeds duplicate rows, foreign-exchange conversion introduces sub-cent drift. This project automates finding those differences across 5,000+ transactions, labels *why* each one broke, and — importantly — measures how often it gets that wrong.
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  React Frontend (Vite, port 5173)                               │
-│  Dashboard → triggers reconciliation → polls status → resolves  │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ HTTP fetch
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  FastAPI Backend (Uvicorn, port 8000)                           │
-│  POST /reconcile/run  →  returns job_id (HTTP 202, ~5ms)        │
-│  GET  /reconcile/status/{job_id}                                │
-│  GET  /breaks  (filterable, paginated)                          │
-│  GET  /breaks/{break_id}                                        │
-│  POST /breaks/{break_id}/resolve                                │
-│  GET  /stats                                                    │
-└──────────┬──────────────────────────┬───────────────────────────┘
-           │ SQLAlchemy (asyncpg)      │ Celery task.apply_async()
-           ▼                          ▼
-┌──────────────────┐        ┌─────────────────────────────────────┐
-│  PostgreSQL 16   │        │  Redis 7 (broker + result backend)  │
-│  Tables:         │◄───────┤                                     │
-│  - ledger        │        │  Celery Worker (sync context)       │
-│  - recon_jobs    │        │  1. Reads ledger + CSV              │
-│  - recon_breaks  │        │  2. Runs matching engine            │
-└──────────────────┘        │  3. INSERT ... ON CONFLICT DO NOTHING│
-                            └─────────────────────────────────────┘
+┌──────────────────┐        ┌──────────────────┐
+│ Internal ledger  │        │  Bank statement  │
+│  (what we think) │        │ (what they say)  │
+└────────┬─────────┘        └─────────┬────────┘
+         └───────────┬────────────────┘
+                     ▼
+          ┌─────────────────────┐
+          │  Matching engine    │   phase 0  duplicates
+          │  (pure function)    │   phase 1  exact id match
+          └──────────┬──────────┘   phase 2  fuzzy fallback
+                     ▼
+        130 classified breaks · overall F1 0.885
 ```
 
 ---
 
-## Quick Start
+## Quickstart
 
-### With Docker Compose (recommended)
+**No database, no Redis, no Docker, no cloud account.**
 
 ```bash
-# 1. Clone and navigate
-cd project-1
+pip install -r backend/requirements.txt
+cd backend && uvicorn app.main:app --reload
+```
 
-# 2. Start all services (Postgres, Redis, backend, Celery worker, frontend)
+Then open <http://localhost:8000/docs> and press **POST /reconcile/run** → **Execute**.
+
+With no `DATABASE_URL` set, the app creates a local SQLite file and runs reconciliation jobs in-process. That is a deliberate design choice — see [Deployment](#deployment) — so anyone can clone the repo and watch it work in under a minute.
+
+To see the dashboard as well:
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+<details>
+<summary><b>Full production architecture instead (Postgres + Redis + a real Celery worker)</b></summary>
+
+```bash
 docker compose up --build
-
-# 3. Generate synthetic data
-docker compose exec backend python data/generate_data.py
-
-# 4. Load internal ledger into PostgreSQL
-docker compose exec backend python data/load_ledger.py
-
-# 5. Open the dashboard
-open http://localhost:5173
-
-# 6. Click "Run Reconciliation" and watch live job status
 ```
 
-### Local (no Docker)
+Frontend on `:5173`, API on `:8000`. The app picks up `DATABASE_URL` and `CELERY_BROKER_URL` from compose and switches from the in-process fallback to a genuine queue-and-worker split — same code, no branching at the call site.
+</details>
+
+---
+
+## The matching engine
+
+The core is [`backend/app/engine/matcher.py`](backend/app/engine/matcher.py). `run_matching()` is a **pure function**: two lists in, a list of `BreakRecord` out. No database, no network, no global state — which is why it can be unit-tested directly and why re-running it is trivially safe.
+
+**Phase 0 — duplicate detection.** Scan each feed for repeated `transaction_id`s. The first occurrence stays in the pool for matching; every extra copy is flagged `DUPLICATE`. This runs first because matching with duplicates still present makes "which copy matched?" ambiguous and corrupts everything downstream.
+
+**Phase 1 — exact ID match.** Build a dict of external rows keyed by `transaction_id`, then do one O(1) lookup per internal row — O(n) overall rather than the O(n²) of nested scans. Each matched pair is then interrogated in a fixed order:
+
+1. *Do the amounts agree?* If not → `AMOUNT_MISMATCH`, unless the gap is ≤ $0.05 **and** the currency is non-USD, in which case → `FX_ROUNDING`.
+2. *Do the dates agree?* (checked only when amounts are clean) 1–3 days apart → `TIMING_LAG`; further apart → `UNKNOWN`, since that is outside the window where a settlement-lag explanation is credible.
+
+**Phase 2 — fuzzy fallback.** Rows with no ID partner get a second chance, paired on *evidence* instead of identity: amount within $0.50 **and** date within 3 days. This recovers transactions whose IDs were mangled or omitted by the bank's system. The algorithm is **greedy** — first candidate within tolerance wins.
+
+**Leftovers.** Still unpaired after both phases: present only internally → `MISSING_EXTERNAL`; present only externally → `MISSING_INTERNAL`. The name states which side is *missing*, not which side was found.
+
+### Tolerances, and why these numbers
+
+| Constant | Value | Reasoning |
+|---|---|---|
+| `AMOUNT_TOLERANCE` | ±$0.50 | Covers typical bank fee deductions without pairing genuinely unrelated transactions |
+| `DATE_TOLERANCE_DAYS` | ±3 days | T+2 settlement standard, plus one day of weekend buffer |
+| `FX_DELTA_THRESHOLD` | ≤$0.05 | FX rounding artifacts are typically sub-cent; $0.05 is deliberately conservative |
+
+Amounts are handled as `Decimal`, never `float`. `0.05` has no exact binary floating-point representation, and on borderline comparisons that error is enough to flip a classification — not acceptable in code that reasons about money.
+
+---
+
+## Evaluation
+
+The headline result is **overall F1 = 0.885**, and the most important thing about it is that it is *not* 1.000.
+
+```
+Break Type          GT   Pred   TP   FP   FN   Precision   Recall      F1
+AMOUNT_MISMATCH     45     50   40   10    5       0.800    0.889   0.842
+MISSING_INTERNAL    15     15   15    0    0       1.000    1.000   1.000
+MISSING_EXTERNAL    15     15   15    0    0       1.000    1.000   1.000
+DUPLICATE           20     20   20    0    0       1.000    1.000   1.000
+TIMING_LAG          15     15   15    0    0       1.000    1.000   1.000
+FX_ROUNDING         20     15   10    5   10       0.667    0.500   0.571
+─────────────────────────────────────────────────────────────────────────
+OVERALL            130    130  115   15   15       0.885    0.885   0.885
+```
+
+Reproduce it with:
 
 ```bash
-# Backend (requires PostgreSQL and Redis running locally)
-cd backend
-pip install -r requirements.txt
-python -X utf8 data/generate_data.py
-
-# API server
-uvicorn app.main:app --reload
-
-# Celery worker (separate terminal)
-celery -A app.celery_app worker --loglevel=info
-
-# Load ledger data
-python data/load_ledger.py
-
-# Frontend
-cd ../frontend
-npm install
-npm run dev
+python scripts/evaluate_standalone.py
 ```
 
-### Smoke test (no external services needed)
+### Why the FX number is low on purpose
 
-```bash
-# Tests the matching engine in isolation — no DB required
-python smoke_test.py
-```
+An earlier version of this project scored a perfect 1.000 on every break type. That was a **circular evaluation**, not a good engine.
 
----
+The generator planted FX breaks with a delta in `[0.01, 0.04]` and always a non-USD currency. The detector classified FX as delta `≤ 0.05` and non-USD. The planted set was a strict subset of the detection boundary, so a perfect score was *geometrically guaranteed* — the test could not fail, which means it was measuring nothing.
 
-## Synthetic Data Generation Methodology
+The fix was to make the test data adversarial. [`generate_data.py`](backend/data/generate_data.py) now plants three noise categories specifically designed to defeat the detector:
 
-**File:** `backend/data/generate_data.py`  
-**Random seed:** `42` (fully reproducible)
+| Category | Ground truth | What the engine does | Effect |
+|---|---|---|---|
+| Non-USD row with a genuine small **fee** (delta ≤ $0.05) | `AMOUNT_MISMATCH` | calls it `FX_ROUNDING` | false positive |
+| Real FX on a volatile day (delta $0.08–$0.35) | `FX_ROUNDING` | delta > threshold → `AMOUNT_MISMATCH` | false negative |
+| Real FX booked to a **USD-normalised** ledger | `FX_ROUNDING` | currency flag lost → `AMOUNT_MISMATCH` | false negative |
 
-### Generation Process
+`FX_ROUNDING` F1 fell from 1.000 to 0.571, and that number is worth more than the perfect one because it reflects the detector's actual generalisation. Ground truth is assigned at *generation* time from known intent, never inferred from the same amount/date features the engine later reads.
 
-1. **5,000 clean matching transactions** are generated with matching `transaction_id` in both feeds, identical amounts, and same timestamps. These serve as the baseline "true negative" set.
-
-2. **115 break-inducing rows** are deliberately planted across the two feeds:
-
-| Break Type | Count | Mechanism |
-|---|---|---|
-| `AMOUNT_MISMATCH` | 40 | External amount = internal − $0.50–$2.50 (bank fee deduction) |
-| `MISSING_INTERNAL` | 15 | Present in external CSV only; absent from internal ledger |
-| `MISSING_EXTERNAL` | 15 | Present in internal ledger only; absent from external CSV |
-| `DUPLICATE` | 20 | Transaction appears twice in the external feed (bank re-processing) |
-| `TIMING_LAG` | 15 | Same amount/ID, external date shifted +1–3 days (settlement lag) |
-| `FX_ROUNDING` | 10 | Non-USD internal currency; external USD amount differs by $0.01–$0.04 |
-
-3. **Ground truth** is written to `ground_truth.csv` mapping `transaction_id → break_type → is_actually_a_break`.
-
-### Ground Truth Integrity
-
-> **Critical note on circular evaluation:** The ground truth is assigned at _generation time_ — we know which rows we planted and what kind of break we introduced. The ground truth is **not** derived from the same features (amount delta, date delta) that the matching engine subsequently uses to detect breaks. This is the correct methodology: the oracle is external to the detection system. See the evaluation section for why this matters.
-
-### Output Files
-
-| File | Rows | Description |
-|---|---|---|
-| `internal_ledger.csv` | 5,100 | Internal ledger (5,000 clean + 100 break rows) |
-| `bank_statement.csv` | 5,120 | External bank feed (5,000 clean + 120 rows incl. duplicates) |
-| `ground_truth.csv` | 5,115 | Oracle labels (5,000 non-breaks + 115 planted breaks) |
-| `generation_summary.json` | — | Machine-readable summary of all counts |
+The corollary matters operationally: **a reconciliation run that reports zero breaks should raise suspicion, not confidence.** Real feeds are messy; a clean result more often means a broken pipeline than perfect books.
 
 ---
 
-## Matching Engine
+## Idempotency
 
-**File:** `backend/app/engine/matcher.py`
+Reconciliation must be safely repeatable — an ops user retrying a job must not double-count anything, and must not lose work a human has already done.
 
-### Algorithm
-
-**Phase 1 — Exact ID match:**
-- Join internal and external rows on `transaction_id`.
-- For each matched pair, check amount delta and date delta.
-- Classify as `AMOUNT_MISMATCH`, `FX_ROUNDING`, or `TIMING_LAG` depending on deltas.
-
-**Phase 2 — Fuzzy fallback:**
-- For rows with no exact ID match, attempt to pair on `amount` within ±$0.50 AND `date` within ±3 days.
-- Greedy matching (first match wins).
-- Still-unmatched rows classified as `MISSING_EXTERNAL` or `MISSING_INTERNAL`.
-
-**Duplicate Detection:**
-- Runs _before_ matching. Transaction IDs appearing more than once in either feed have their extras flagged immediately as `DUPLICATE`.
-
-### Exact Tolerance Values
-
-| Parameter | Value | Rationale |
-|---|---|---|
-| Amount fuzzy tolerance | **±$0.50** | Covers typical bank fee deductions ($0.25–$0.50) without matching genuinely different transactions |
-| Date fuzzy tolerance | **±3 days** | Covers standard T+2 settlement plus a 1-day buffer for weekends |
-| FX rounding threshold | **≤$0.05** | FX rounding errors are typically sub-cent; $0.05 is conservative to minimise false positives |
-
----
-
-## Idempotency (Double-Entry Safety)
-
-The `reconciliation_breaks` table has a `UNIQUE(transaction_id, break_type)` constraint enforced at the database level:
+This is enforced **at the database level**, not in application code:
 
 ```sql
-UNIQUE (transaction_id, break_type)  -- named: uq_break_txn_type
+UNIQUE (transaction_id, break_type, source)
 ```
 
-All break inserts use `INSERT ... ON CONFLICT (transaction_id, break_type) DO NOTHING`. Running the reconciliation job twice on identical data:
-- Does **not** create duplicate break records
-- Does **not** overwrite manually-resolved breaks (the `resolved` flag is preserved)
-- Is verifiable: `GET /stats` returns identical counts before and after a re-run
+combined with `INSERT ... ON CONFLICT DO NOTHING` in [`tasks.py`](backend/app/tasks.py). A second run over unchanged data inserts zero rows, and any break a human marked resolved in between is left untouched — no application bug or concurrent worker can bypass a constraint the database itself holds.
 
-This is enforced at the **database level**, not just application code — no application bug or parallel worker can bypass it.
+The engine is deterministic (same input → same set of natural keys), which is what makes that constraint meaningful. Both properties are asserted in the test suite.
 
----
-
-## Per-Break-Type Precision/Recall
-
-Evaluated against the planted ground truth using `backend/data/evaluate.py`.
-
-> **Note:** These numbers are generated by running `python data/evaluate.py` after a reconciliation run. The engine smoke test confirms all 115 planted breaks are detected with exact type classification on the synthetic data.
-
-| Break Type | GT Count | Pred Count | Precision | Recall | F1 | Notes |
-|---|---|---|---|---|---|---|
-| `AMOUNT_MISMATCH` | 40 | 40 | 1.000 | 1.000 | 1.000 | Exact ID match; delta > $0.05 |
-| `MISSING_INTERNAL` | 15 | 15 | 1.000 | 1.000 | 1.000 | Trivially detectable |
-| `MISSING_EXTERNAL` | 15 | 15 | 1.000 | 1.000 | 1.000 | Trivially detectable |
-| `DUPLICATE` | 20 | 20 | 1.000 | 1.000 | 1.000 | Frequency counting before match |
-| `TIMING_LAG` | 15 | 15 | 1.000 | 1.000 | 1.000 | Date delta within 3-day window |
-| `FX_ROUNDING` | 10 | 10 | 1.000 | 1.000 | 1.000 | Non-USD currency flag + delta ≤ $0.05 |
-
-**On synthetic data the engine achieves perfect classification** because the synthetic data was designed to be unambiguous: FX breaks always have non-USD currency set, timing lags are always within the 3-day window, and amounts never straddle the tolerance boundaries.
-
-**In production, expect these degradations:**
-- `FX_ROUNDING` precision will drop if the internal system normalises all amounts to USD at booking (the currency flag is lost → breaks misclassified as `AMOUNT_MISMATCH`)
-- `TIMING_LAG` recall will drop for international wires or holiday-extended settlement (>3 day lag)
-- `DUPLICATE` recall will drop if the bank uses different transaction_ids for re-presentments
-- `AMOUNT_MISMATCH` precision will decrease when legitimate FX swings exceed $0.05 on non-USD rows
+**One deliberate exception:** the *uploaded* data path clears its previous breaks before each run, because uploading a new CSV pair replaces the dataset wholesale — stale breaks from a prior upload lingering in the table would be worse than losing resolutions on data that no longer exists.
 
 ---
 
-## Idempotency Test
+## Testing
 
 ```bash
-# First run
-curl -X POST http://localhost:8000/reconcile/run
-# → {"job_id": "abc-123", "status": "pending"}
-
-# Wait for completion
-curl http://localhost:8000/reconcile/status/abc-123
-# → {"status": "complete", "breaks_detected": 115}
-
-# Check stats
-curl http://localhost:8000/stats
-# → {"total_breaks_detected": 115}
-
-# SECOND run — same data
-curl -X POST http://localhost:8000/reconcile/run
-curl http://localhost:8000/stats
-# → {"total_breaks_detected": 115}  ← IDENTICAL — no duplicates created
+cd backend && pytest tests -v      # 18 unit tests against the engine
+python scripts/smoke_test.py       # runs the engine over the full synthetic feed
+python scripts/evaluate_standalone.py
 ```
 
----
-
-## Why Celery/Redis (Architectural Reasoning)
-
-Reconciling large datasets synchronously in a FastAPI request handler would cause:
-
-1. **ASGI event loop blocking** — FastAPI runs on an async event loop. Any CPU-bound or slow I/O operation that runs inline blocks the event loop for _all_ concurrent requests, not just the one that triggered it. Python's GIL means this isn't solved by asyncio alone.
-
-2. **HTTP timeout failures** — Most clients (browsers, API gateways, load balancers) enforce 30–60 second timeouts. With 50,000 row datasets and O(n²) fuzzy matching, this limit is easily exceeded.
-
-3. **No retry mechanism** — Synchronous failures require client-initiated retries. Celery automatically retries failed tasks with configurable backoff.
-
-4. **Independent scalability** — With Celery, the reconciliation worker tier can be scaled independently of the API tier. During a batch reconciliation window, spin up 10 workers; during normal hours, run 2.
-
-5. **Progress visibility** — The `reconciliation_jobs` table gives real-time status; the API client doesn't need to maintain a connection.
-
-**Why Redis as the broker?**
-Redis is already required for the result backend. Using it as the broker eliminates an additional dependency. The trade-off is that Redis pub/sub messages are lost if Redis restarts before a worker picks them up — in production, RabbitMQ or AWS SQS would be preferred for guaranteed delivery.
+The unit tests cover every break type, both fuzzy-match tolerance boundaries, the FX/USD distinction, duplicate counting, and determinism.
 
 ---
 
-## API Endpoints
+## API
 
-| Method | Path | Description |
+| Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/reconcile/run` | Trigger a new reconciliation job (async). Returns `job_id` (HTTP 202). |
-| `GET` | `/reconcile/status/{job_id}` | Poll job status: `pending → running → complete / failed` |
-| `GET` | `/breaks` | List breaks. Filterable by `break_type`, `resolved`. Paginated. |
-| `GET` | `/breaks/{break_id}` | Full detail for a specific break. |
-| `POST` | `/breaks/{break_id}/resolve` | Mark a break as manually resolved (idempotent). |
-| `GET` | `/stats` | Aggregate stats: total transactions, breaks by type, resolution rate. |
+| `POST` | `/reconcile/run?source=synthetic\|uploaded` | Queue a run, returns `job_id` (HTTP 202) |
+| `GET` | `/reconcile/status/{job_id}` | Poll job state |
+| `POST` | `/reconcile/upload/ledger` | Upload an internal ledger CSV |
+| `POST` | `/reconcile/upload/statement` | Upload a bank statement CSV |
+| `GET` | `/breaks` | List breaks — filter by type/resolved, paginated |
+| `GET` | `/breaks/{break_id}` | Single break detail |
+| `POST` | `/breaks/{break_id}/resolve` | Mark resolved (idempotent) |
+| `GET` | `/breaks/export` | CSV export of the current filter |
+| `POST` | `/breaks/{break_id}/ai-explain` | Gemini-generated plain-English explanation (rate limited, cached) |
+| `GET` | `/stats` | Aggregate counts and resolution rate |
+| `GET` | `/health` | Liveness probe |
 
-**Interactive docs:** `http://localhost:8000/docs`
+Interactive docs at `/docs`.
 
----
+### Why reconciliation runs in a background worker
 
-## Documented Limitations
+Phase 2 is O(n²) in the worst case. At 5,000 unmatched rows that is 25 million comparisons — seconds of pure CPU. Inside an async FastAPI handler, blocking work of that shape stalls the **entire event loop**, not just the one request, so every concurrent client is degraded and browsers begin timing out at 30–60 seconds.
 
-The following limitations are acknowledged explicitly (not glossed over):
+Celery moves the work into a separate OS process. `POST /reconcile/run` returns a `job_id` in milliseconds, the client polls for completion, and the worker scales independently of the web tier.
 
-1. **Fixed fuzzy-match tolerances (not learned).** The ±$0.50 amount tolerance and ±3-day date window are hand-chosen constants. They are not learned from data and will not adapt to datasets where the typical fee range is different. A production system should use distribution-based thresholds or machine learning.
-
-2. **No real authentication or multi-tenancy.** There is no user authentication, API key management, or row-level security. All callers can see all breaks and trigger reconciliation. A production deployment needs OAuth2/JWT and tenant-scoped data access.
-
-3. **Greedy fuzzy matching (not optimal).** Phase 2 uses a greedy first-match algorithm (O(n²) worst case). The Hungarian algorithm (O(n³)) would produce optimal matching but is impractical for large feeds. This means fuzzy matches may be wrong when multiple candidates exist.
-
-4. **Synthetic data may not capture real bank statement messiness.** Real bank statements have: inconsistent date formats, multi-line descriptions, SWIFT codes, correspondent bank intermediary rows, reversals, and chargebacks — none of which are modelled here.
-
-5. **FX rounding detection requires a non-USD currency flag.** If the internal system normalises all amounts to USD at booking time, the currency field will always be "USD" and FX rounding breaks will be misclassified as `AMOUNT_MISMATCH`. This is a data quality dependency, not an engine limitation per se.
-
-6. **Timing-lag detection uses a fixed 3-day window.** International wire transfers, holiday weekends, and some ACH batches settle in more than 3 business days. These will be classified as `MISSING_EXTERNAL` until the external statement catches up, generating false breaks.
-
-7. **Redis as message broker has no guaranteed delivery.** If Redis restarts between task dispatch and worker pickup, the task is lost. RabbitMQ or AWS SQS with explicit acknowledgement would be required for production durability.
-
-8. **No pagination on the evaluation script.** `evaluate.py` loads all break records into memory. For production-scale datasets (millions of transactions), this would need to be rewritten with cursor-based pagination.
-
-9. **Single-node architecture.** There is no horizontal scaling configuration, no circuit breakers, no health-check-based failover, and no distributed tracing. This is a development-quality deployment, not a HA production design.
+*Redis was chosen as the broker over RabbitMQ for operational simplicity in a single-node stack. Redis offers weaker delivery guarantees — messages can be lost on restart — so a production deployment would prefer RabbitMQ or SQS. Documented, not hidden.*
 
 ---
 
-## Project Structure
+## Two operating modes
+
+**Synthetic dataset** — 5,000 clean transactions plus 130 deliberately planted breaks with a known ground-truth map. This is the only mode where precision/recall are meaningful, and the source of every number above.
+
+**CSV upload** — upload your own ledger and statement pair and run the *same* engine against them. No ground truth exists for arbitrary uploads, so this mode reports detected breaks only and is labelled "unevaluated" in the UI. The two datasets live in separate tables and are separated by a `source` column, so uploads can never contaminate the evaluated baseline.
+
+---
+
+## Deployment
+
+The app follows [twelve-factor](https://12factor.net/config) config: **everything comes from the environment, and every variable has a working default.**
+
+| Variable | Unset behaviour | Set behaviour |
+|---|---|---|
+| `DATABASE_URL` | local SQLite file | Postgres (async + sync drivers derived from the one url) |
+| `CELERY_BROKER_URL` | tasks run in-process (eager) | real queue, separate worker |
+| `REDIS_URL` | in-memory rate-limit counters | shared counters across processes |
+| `ALLOWED_ORIGINS` | localhost dev origins | explicit CORS allow-list |
+| `GEMINI_API_KEY` | AI explain button disabled | AI explanations enabled |
+| `PORT` | 8000 | platform-assigned port |
+
+Two details make this genuinely portable rather than nominally so. First, a **single** `DATABASE_URL` is accepted and both drivers are derived from it — managed platforms inject exactly one connection string, never two. Second, the legacy `postgres://` scheme that Render, Railway, Heroku and Supabase still emit is rewritten to `postgresql://`, which SQLAlchemy 2.x otherwise refuses to parse. UUID columns use a portable type that maps to native `uuid` on Postgres and `CHAR(36)` elsewhere.
+
+A [`render.yaml`](render.yaml) blueprint is included for a free one-click deploy (database, Redis, API and worker provisioned together, connection strings wired automatically). It is entirely optional — nothing in the codebase depends on a particular host.
+
+---
+
+## Known limitations
+
+Stated plainly, because a system whose failure modes are undocumented cannot be trusted:
+
+1. **Fuzzy matching is greedy, not optimal.** Optimal assignment is the Hungarian algorithm at O(n³) — too expensive for large feeds. Greedy can mis-pair when several unmatched rows share similar amounts and dates.
+2. **FX detection depends on a currency flag that production systems often discard.** Ledgers that normalise to USD at booking time lose the signal entirely and those breaks degrade to `AMOUNT_MISMATCH`. Measured, not theoretical: it is half the FX recall loss.
+3. **Tolerances are fixed constants, not learned.** A per-counterparty or per-corridor model would adapt; these do not.
+4. **Timing-lag uses a fixed 3-day window.** International wires and holiday weekends legitimately exceed it and get misfiled as `UNKNOWN`.
+5. **A transaction with both an amount *and* a date discrepancy is classified only by amount.** First classification wins.
+6. **Duplicate detection keys on `transaction_id` alone.** A bank re-presenting the same payment under a fresh ID is invisible to it.
+7. **Synthetic data understates real-world messiness** — encoding quirks, inconsistent date formats, free-text descriptions, partial settlements.
+8. **No authentication or multi-tenancy.** Every caller sees every break.
+9. **Schema is created via `create_all`, not migrations.** Fine for a fresh deploy; a long-lived production database would need Alembic.
+10. **Single-node design** — no HA, no distributed tracing, no partitioning of the breaks table.
+
+---
+
+## Layout
 
 ```
-project-1/
-├── docker-compose.yml
-├── .env.example
-├── smoke_test.py              ← Tests engine in isolation (no DB/Redis needed)
-├── backend/
-│   ├── Dockerfile
-│   ├── requirements.txt
-│   ├── app/
-│   │   ├── main.py            ← FastAPI app factory
-│   │   ├── database.py        ← Async (FastAPI) + sync (Celery) engines
-│   │   ├── models.py          ← ORM models with UNIQUE constraint
-│   │   ├── schemas.py         ← Pydantic v2 schemas
-│   │   ├── celery_app.py      ← Celery configuration + rationale
-│   │   ├── tasks.py           ← reconciliation_task (idempotent)
-│   │   ├── engine/
-│   │   │   └── matcher.py     ← Core matching engine (pure function)
-│   │   └── api/
-│   │       ├── reconcile.py   ← /reconcile endpoints
-│   │       └── breaks.py      ← /breaks + /stats endpoints
-│   └── data/
-│       ├── generate_data.py   ← Synthetic data generator (seed=42)
-│       ├── load_ledger.py     ← Loads CSV into PostgreSQL
-│       └── evaluate.py        ← Per-type precision/recall evaluation
-└── frontend/
-    ├── Dockerfile
-    ├── index.html
-    ├── vite.config.js
-    └── src/
-        ├── main.jsx
-        ├── App.jsx            ← Full dashboard (all components inline)
-        ├── api.js             ← API client
-        └── index.css          ← Design system CSS
+backend/
+  app/
+    engine/matcher.py     ← the core; pure, dependency-free, unit-tested
+    api/reconcile.py      ← run, status, CSV upload
+    api/breaks.py         ← list, detail, resolve, export, AI explain
+    tasks.py              ← Celery task + idempotent bulk insert
+    models.py             ← ORM schema, portable UUID, unique constraint
+    database.py           ← one url in, async + sync engines out
+  data/generate_data.py   ← synthetic generator with adversarial FX noise
+  tests/test_matcher.py   ← 18 unit tests
+scripts/
+  evaluate_standalone.py  ← per-type precision/recall/F1
+  smoke_test.py           ← engine over the full feed, no DB required
+frontend/src/App.jsx      ← dashboard, chart, table, upload, detail modal
+render.yaml               ← optional free one-click deploy
 ```
+
+## Stack
+
+FastAPI · SQLAlchemy 2.0 (async) · Celery · Redis · PostgreSQL / SQLite · React + Vite · Recharts · Docker Compose · Google Gemini

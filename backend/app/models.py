@@ -12,14 +12,43 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Numeric, DateTime, Boolean, ForeignKey,
-    UniqueConstraint, Text, Index,
+    UniqueConstraint, Text, Index, CHAR, TypeDecorator,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from app.database import Base
 
 
 def _utcnow():
     return datetime.now(timezone.utc)
+
+
+class GUID(TypeDecorator):
+    """
+    Platform-independent UUID column.
+
+    Uses Postgres' native UUID type where available (efficient, indexable as a
+    real uuid), and falls back to CHAR(36) on SQLite and anything else. Without
+    this the models could only ever be created against Postgres, which is what
+    previously tied the whole project to a single deployment target.
+    """
+
+    impl = CHAR
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID(as_uuid=True))
+        return dialect.type_descriptor(CHAR(36))
+
+    def process_bind_param(self, value, dialect):
+        if value is None or dialect.name == "postgresql":
+            return value
+        return str(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None or isinstance(value, uuid.UUID):
+            return value
+        return uuid.UUID(value)
 
 
 class LedgerTransaction(Base):
@@ -68,7 +97,7 @@ class ReconciliationJob(Base):
     """
     __tablename__ = "reconciliation_jobs"
 
-    job_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    job_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     status = Column(String(20), nullable=False, default="pending")  # pending/running/complete/failed
     source = Column(String(20), nullable=False, default="synthetic")  # synthetic/uploaded
     started_at = Column(DateTime(timezone=True), nullable=True)
@@ -94,7 +123,7 @@ class ReconciliationBreak(Base):
     """
     __tablename__ = "reconciliation_breaks"
 
-    break_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    break_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     transaction_id = Column(String, nullable=False)
     break_type = Column(String(30), nullable=False)
     internal_amount = Column(Numeric(18, 4), nullable=True)
@@ -106,7 +135,7 @@ class ReconciliationBreak(Base):
     detected_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
     resolved = Column(Boolean, nullable=False, default=False)
     resolved_at = Column(DateTime(timezone=True), nullable=True)
-    job_id = Column(UUID(as_uuid=True), ForeignKey("reconciliation_jobs.job_id"), nullable=True)
+    job_id = Column(GUID(), ForeignKey("reconciliation_jobs.job_id"), nullable=True)
     source = Column(String(20), nullable=False, default="synthetic")
     ai_explanation = Column(Text, nullable=True)
 

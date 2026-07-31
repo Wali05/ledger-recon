@@ -57,7 +57,10 @@ async def upload_ledger(
     inserted = 0
     skipped = 0
 
-    await session.execute(text("TRUNCATE TABLE uploaded_ledger"))
+    # DELETE rather than TRUNCATE: TRUNCATE is Postgres/MySQL-only and would
+    # break the SQLite path. At demo row counts the performance difference is
+    # irrelevant, and DELETE is transactional on both backends.
+    await session.execute(text("DELETE FROM uploaded_ledger"))
 
     for i, row in enumerate(reader, start=1):
         try:
@@ -112,7 +115,8 @@ async def upload_statement(
     inserted = 0
     skipped = 0
 
-    await session.execute(text("TRUNCATE TABLE uploaded_statement"))
+    # DELETE rather than TRUNCATE — see the note in upload_ledger above.
+    await session.execute(text("DELETE FROM uploaded_statement"))
 
     for i, row in enumerate(reader, start=1):
         try:

@@ -307,9 +307,42 @@ async def get_stats(
     )
 
 
-# Set up Redis client for rate limiting
-redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-redis_client = redis.from_url(redis_url)
+# ── Rate limiting for the AI endpoint ────────────────────────────────────────
+# Redis is the right store for this: the counters are shared across every API
+# process, so the limit holds no matter which worker serves the request.
+#
+# But Redis is optional in this project (see celery_app.py), so when REDIS_URL
+# is unset we fall back to a process-local in-memory counter. That is NOT a
+# correct distributed rate limiter — with multiple processes each gets its own
+# allowance — but it keeps a single-process local run honest and prevents an
+# absent Redis from taking down the whole API at import time.
+redis_url = os.environ.get("REDIS_URL", "").strip()
+redis_client = redis.from_url(redis_url) if redis_url else None
+
+_local_counters: dict[str, int] = {}
+
+
+async def _incr_counters(minute_key: str, day_key: str) -> tuple[int, int]:
+    """Increment both windows and return (per-minute count, per-day count)."""
+    if redis_client is not None:
+        # NX ensures the TTL is only set on the first increment of each window,
+        # so the expiry isn't pushed forward on every request (which would make
+        # the window slide indefinitely and never reset the count).
+        async with redis_client.pipeline(transaction=True) as pipe:
+            pipe.incr(minute_key)
+            pipe.expire(minute_key, 60, nx=True)
+            pipe.incr(day_key)
+            pipe.expire(day_key, 86400, nx=True)
+            res = await pipe.execute()
+        return res[0], res[2]
+
+    # In-memory fallback. Keys embed the clock window, so stale keys simply stop
+    # being written to; we prune opportunistically to bound memory.
+    if len(_local_counters) > 512:
+        _local_counters.clear()
+    _local_counters[minute_key] = _local_counters.get(minute_key, 0) + 1
+    _local_counters[day_key] = _local_counters.get(day_key, 0) + 1
+    return _local_counters[minute_key], _local_counters[day_key]
 
 @router.post("/breaks/{break_id}/ai-explain")
 async def explain_break_with_ai(
@@ -347,18 +380,7 @@ async def explain_break_with_ai(
     minute_key = f"ai_rate_limit:min:{now.strftime('%Y-%m-%d:%H:%M')}"
     day_key = f"ai_rate_limit:day:{now.strftime('%Y-%m-%d')}"
 
-    # NX ensures the TTL is only set on the first increment of each window, so the
-    # expiry isn't pushed forward on every request (which would make the window slide
-    # indefinitely and never reset the count).
-    async with redis_client.pipeline(transaction=True) as pipe:
-        pipe.incr(minute_key)
-        pipe.expire(minute_key, 60, nx=True)
-        pipe.incr(day_key)
-        pipe.expire(day_key, 86400, nx=True)
-        res = await pipe.execute()
-
-    min_count = res[0]
-    day_count = res[2]
+    min_count, day_count = await _incr_counters(minute_key, day_key)
 
     if min_count > 15:
         raise HTTPException(status_code=429, detail="Rate limit exceeded: 15 requests per minute allowed.")

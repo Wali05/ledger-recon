@@ -30,10 +30,16 @@ import psycopg2
 from tabulate import tabulate
 
 DATA_DIR = Path(__file__).parent
+
+# Postgres-specific evaluator (reads breaks back out of the DB via psycopg2).
+# For an evaluation that needs no database at all, use
+# scripts/evaluate_standalone.py instead — it produces the same metrics.
 DB_URL = os.getenv(
-    "SYNC_DATABASE_URL",
+    "DATABASE_URL",
     "postgresql://recon_user:recon_pass@localhost:5432/ledger_recon",
 )
+if DB_URL.startswith("postgres://"):
+    DB_URL = "postgresql://" + DB_URL[len("postgres://"):]
 
 BREAK_TYPES = [
     "AMOUNT_MISMATCH",

@@ -18,10 +18,18 @@ from pathlib import Path
 import psycopg2
 
 DATA_DIR = Path(__file__).parent
+
+# This script is Postgres-specific (it uses psycopg2 directly), so it reads the
+# same single DATABASE_URL the app uses and only needs the sync driver form.
+# The zero-infrastructure SQLite path does not need it: reconciliation reads the
+# CSVs directly, so loading the ledger table is only required for the Postgres
+# deployment where /stats counts rows in it.
 DB_URL = os.getenv(
-    "SYNC_DATABASE_URL",
+    "DATABASE_URL",
     "postgresql://recon_user:recon_pass@localhost:5432/ledger_recon",
 )
+if DB_URL.startswith("postgres://"):
+    DB_URL = "postgresql://" + DB_URL[len("postgres://"):]
 
 
 def load_ledger():

@@ -28,3 +28,10 @@ test_ledger.csv
 test_statement.csv
 reconciliation_breaks_*.csv
 ground_truth.csv
+
+# Local SQLite database (zero-infrastructure mode)
+*.db
+backend/ledger_recon.db
+
+# Generated test fixtures (recreate with scripts/generate_large_test.py)
+scripts/large_test_*.csv
