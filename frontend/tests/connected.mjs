@@ -13,7 +13,9 @@ assert.ok(
   ["localhost", "127.0.0.1"].includes(new URL(url).hostname),
   "This check is restricted to a local test stack",
 );
-const browser = await chromium.launch();
+const browser = await chromium.launch({
+  executablePath: process.env.CHROMIUM_PATH || undefined,
+});
 try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
@@ -21,12 +23,22 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto(url);
+  // With API_KEYS configured on the server, pass one key via API_KEY.
+  if (process.env.API_KEY) {
+    const field = page.getByLabel("API key");
+    await field.fill("wrong-key-0000000000");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByText("That key was not accepted.").waitFor();
+    await field.fill(process.env.API_KEY);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Sign out" }).waitFor();
+  }
   await page.getByText("Connected workspace", { exact: true }).waitFor();
   await page
     .getByRole("button", { name: "Your CSV files", exact: true })
     .click();
   const ledger = await readFile(
-    new URL("../../sample_ledger.csv", import.meta.url),
+    new URL("../../samples/ledger.csv", import.meta.url),
     "utf8",
   );
   await page.getByLabel("Internal ledger CSV").setInputFiles({
@@ -39,7 +51,7 @@ try {
   await page
     .getByLabel("Bank statement CSV")
     .setInputFiles(
-      fileURLToPath(new URL("../../sample_statement.csv", import.meta.url)),
+      fileURLToPath(new URL("../../samples/statement.csv", import.meta.url)),
     );
   const uploaded = page.waitForResponse(
     (response) =>
@@ -92,10 +104,18 @@ try {
   await dialog
     .getByRole("button", { name: "Mark resolved", exact: true })
     .waitFor();
-  assert.match(await dialog.innerText(), /10\.0000/);
+  assert.match(await dialog.innerText(), /10\.00/);
+  await dialog
+    .getByLabel("Note for the record (optional)")
+    .fill("Confirmed with bank");
   await dialog
     .getByRole("button", { name: "Mark resolved", exact: true })
     .click();
+  await dialog.getByRole("button", { name: "Reopen", exact: true }).waitFor();
+  assert.match(
+    await dialog.locator(".history-list").innerText(),
+    new RegExp(`resolved by ${process.env.API_REVIEWER || "local"}`, "i"),
+  );
   await page.waitForFunction(
     () => document.querySelectorAll(".stat-value")[2]?.textContent === "1",
   );

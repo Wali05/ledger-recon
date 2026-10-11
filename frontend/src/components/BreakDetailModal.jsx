@@ -1,6 +1,18 @@
+import {
+  CheckIcon,
+  CloseIcon,
+  HistoryIcon,
+  SparkIcon,
+  UndoIcon,
+} from "./Icons";
 import { useEffect, useRef, useState } from "react";
-import { Check, Sparkles, X } from "lucide-react";
-import { getBreak, resolveBreak, explainBreakWithAI, DEMO_MODE } from "../api";
+import {
+  getBreak,
+  getBreakEvents,
+  resolveBreak,
+  reopenBreak,
+  explainBreakWithAI,
+} from "../api";
 import { formatAmount, formatDate } from "../format";
 import BreakTypeBadge from "./BreakTypeBadge";
 
@@ -15,6 +27,8 @@ export default function BreakDetailModal({
   const [record, setRecord] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+  const [events, setEvents] = useState([]);
   useEffect(() => {
     const dialog = dialogRef.current;
     dialog.showModal();
@@ -22,20 +36,32 @@ export default function BreakDetailModal({
   }, []);
   useEffect(() => {
     const controller = new AbortController();
-    getBreak(breakId, controller.signal)
-      .then(setRecord)
+    Promise.all([
+      getBreak(breakId, controller.signal),
+      getBreakEvents(breakId, controller.signal),
+    ])
+      .then(([detail, history]) => {
+        setRecord(detail);
+        setEvents(history);
+      })
       .catch((error) => {
         if (error.name !== "AbortError") setError(error.message);
       });
     return () => controller.abort();
   }, [breakId]);
 
-  async function resolve() {
-    setBusy("resolve");
+  async function review(action) {
+    setBusy(action);
     try {
-      const result = await resolveBreak(breakId);
-      setRecord((previous) => ({ ...previous, ...result }));
-      addToast(DEMO_MODE ? "Resolved in your browser demo" : "Break resolved");
+      const result = await (action === "resolve" ? resolveBreak : reopenBreak)(
+        breakId,
+        note,
+      );
+      const { message, ...state } = result;
+      setRecord((previous) => ({ ...previous, ...state }));
+      setEvents(await getBreakEvents(breakId));
+      setNote("");
+      addToast(message);
       onResolved();
     } catch (error) {
       addToast(error.message, "error");
@@ -59,27 +85,23 @@ export default function BreakDetailModal({
   }
   const fields = record
     ? [
-        ["Transaction ID", record.transaction_id],
-        ["External transaction", record.external_transaction_id || "—"],
-        [
-          "Internal amount",
-          formatAmount(record.internal_amount, record.currency),
-        ],
-        [
-          "External amount",
-          formatAmount(record.external_amount, record.currency),
-        ],
-        ["Difference", formatAmount(record.delta_amount, record.currency)],
-        ["Currency", record.currency || "Not supplied by statement"],
-        ["Internal date", formatDate(record.internal_timestamp)],
-        ["External date", formatDate(record.external_timestamp)],
+        ["Ledger transaction", record.transaction_id],
+        ["Bank transaction", record.external_transaction_id || "—"],
+        ["Ledger date", formatDate(record.internal_timestamp)],
+        ["Bank date", formatDate(record.external_timestamp)],
+        ["Currency", record.currency || "Not on the statement"],
         ["Detected", formatDate(record.detected_at)],
-        ["Resolved", formatDate(record.resolved_at)],
+        [
+          "Resolved",
+          record.resolved_at
+            ? `${formatDate(record.resolved_at)} by ${record.resolved_by || "unknown"}`
+            : "—",
+        ],
         [
           "Evidence",
           record.evidence_side === "pair"
-            ? "Matched pair"
-            : `${record.evidence_side} feed${record.occurrence ? " · extra occurrence " + record.occurrence : ""}`,
+            ? "Paired rows"
+            : `${record.evidence_side === "internal" ? "Ledger" : "Bank"} side only${record.occurrence ? `, extra copy ${record.occurrence}` : ""}`,
         ],
         ["Break ID", record.break_id],
       ]
@@ -103,14 +125,14 @@ export default function BreakDetailModal({
     >
       <div className="modal-header">
         <h2 id="detail-title" className="modal-title">
-          Break detail
+          {record ? record.transaction_id : "Break"}
         </h2>
         <button
           className="modal-close"
-          aria-label="Close break details"
+          aria-label="Close evidence"
           onClick={onClose}
         >
-          <X size={16} />
+          <CloseIcon size={16} />
         </button>
       </div>
       <div className="modal-body">
@@ -132,6 +154,16 @@ export default function BreakDetailModal({
                 {record.resolved ? "Resolved" : "Open"}
               </span>
             </div>
+            <dl className="detail-sum" aria-label="Amounts">
+              <dt>Ledger</dt>
+              <dd>{formatAmount(record.internal_amount, record.currency)}</dd>
+              <dt>Bank</dt>
+              <dd>{formatAmount(record.external_amount, record.currency)}</dd>
+              <dt className="total">Difference</dt>
+              <dd className="total">
+                {formatAmount(record.delta_amount, record.currency)}
+              </dd>
+            </dl>
             <dl className="detail-grid">
               {fields.map(([label, value]) => (
                 <div key={label} className="detail-item">
@@ -144,11 +176,50 @@ export default function BreakDetailModal({
                 <dd>{record.description}</dd>
               </div>
             </dl>
+            <section className="review-panel" aria-labelledby="history-title">
+              <h3 id="history-title" className="review-title">
+                <HistoryIcon size={14} /> Review history
+              </h3>
+              {events.length ? (
+                <ol className="history-list">
+                  {events.map((event) => (
+                    <li key={event.event_id}>
+                      <span className={`history-action ${event.action}`}>
+                        {event.action}
+                      </span>{" "}
+                      by <strong>{event.reviewer}</strong> on{" "}
+                      {formatDate(event.created_at)}
+                      {event.note && (
+                        <p className="history-note">{event.note}</p>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="ai-hint">No review decisions yet.</p>
+              )}
+              <label className="note-label" htmlFor="review-note">
+                Note for the record (optional)
+              </label>
+              <textarea
+                id="review-note"
+                className="note-input"
+                rows={2}
+                maxLength={1000}
+                value={note}
+                placeholder={
+                  record.resolved
+                    ? "Why is this being reopened?"
+                    : "e.g. Bank fee confirmed with statement line 42"
+                }
+                onChange={(event) => setNote(event.target.value)}
+              />
+            </section>
             {(aiEnabled || record.ai_explanation) && (
               <div className="ai-panel">
                 <div className="ai-panel-head">
                   <span>
-                    <Sparkles size={14} /> Optional explanation
+                    <SparkIcon size={14} /> Optional explanation
                   </span>
                   {aiEnabled && !record.ai_explanation && (
                     <button
@@ -179,10 +250,20 @@ export default function BreakDetailModal({
           <button
             className="action-btn success"
             disabled={!!busy}
-            onClick={resolve}
+            onClick={() => review("resolve")}
           >
-            <Check size={15} />
+            <CheckIcon size={15} />
             {busy === "resolve" ? "Resolving…" : "Mark resolved"}
+          </button>
+        )}
+        {record?.resolved && (
+          <button
+            className="action-btn"
+            disabled={!!busy}
+            onClick={() => review("reopen")}
+          >
+            <UndoIcon size={15} />
+            {busy === "reopen" ? "Reopening…" : "Reopen"}
           </button>
         )}
       </div>

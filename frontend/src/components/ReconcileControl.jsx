@@ -1,5 +1,5 @@
+import { BankIcon, PlayIcon, SheetIcon, UploadIcon } from "./Icons";
 import { useCallback, useEffect, useState } from "react";
-import { FileText, Landmark, Play, Upload } from "lucide-react";
 import {
   DEMO_MODE,
   getJobs,
@@ -7,6 +7,13 @@ import {
   triggerReconciliation,
   uploadPair,
 } from "../api";
+
+const STATUS_TEXT = {
+  pending: "Queued",
+  running: "Running",
+  complete: "Last run complete",
+  failed: "Last run failed",
+};
 
 export default function ReconcileControl({
   source,
@@ -63,7 +70,7 @@ export default function ReconcileControl({
             addToast(
               DEMO_MODE
                 ? "Precomputed sample results loaded"
-                : `Complete · ${status.breaks_detected} breaks, ${status.breaks_inserted} new`,
+                : `Run complete: ${status.breaks_detected} breaks, ${status.breaks_inserted} new`,
             );
             onChange();
           } else
@@ -116,7 +123,7 @@ export default function ReconcileControl({
       setDirty(false);
       if (result.replaced) setJob(null);
       addToast(
-        `${result.message} · ${result.ledger_rows} ledger / ${result.statement_rows} statement rows`,
+        `${result.message}: ${result.ledger_rows} ledger and ${result.statement_rows} statement rows`,
       );
       onChange();
     } catch (error) {
@@ -133,17 +140,16 @@ export default function ReconcileControl({
   return (
     <section className="reconcile-card" aria-labelledby="engine-title">
       <div className="reconcile-info">
-        <h2 id="engine-title">Compare. Investigate. Resolve.</h2>
+        <h2 id="engine-title">
+          {source === "synthetic" ? "Sample run" : "Your files"}
+        </h2>
         <p>
-          {DEMO_MODE
-            ? "Inspect a break, test a resolution, or replay the sample results."
-            : "Compare two feeds, inspect the rule evidence, and keep your resolutions when you rerun unchanged data."}
-        </p>
-        <div className="note-callout">
           {source === "synthetic"
-            ? "Synthetic data · 5,000 clean payments plus planted discrepancies. FX labels are hypotheses for human review."
-            : "Upload UTF-8 CSV files with comparable amount units. Both files are validated before replacement. Limits: 10 MiB and 10,000 rows per file."}
-        </div>
+            ? "5,000 clean payments with planted discrepancies. FX labels are suggestions for a reviewer, not conclusions."
+            : "UTF-8 CSV files, up to 10 MiB and 10,000 rows each. Both are checked line by line before anything is replaced."}
+          {!DEMO_MODE &&
+            " Rerunning unchanged data keeps every review decision."}
+        </p>
       </div>
       {source === "uploaded" &&
         (DEMO_MODE ? (
@@ -154,8 +160,8 @@ export default function ReconcileControl({
         ) : (
           <div className="upload-panel">
             {[
-              ["ledger", "Internal ledger CSV", FileText],
-              ["statement", "Bank statement CSV", Landmark],
+              ["ledger", "Internal ledger CSV", SheetIcon],
+              ["statement", "Bank statement CSV", BankIcon],
             ].map(([key, label, Icon]) => (
               <div className="upload-field" key={key}>
                 <label htmlFor={`upload-${key}`}>
@@ -181,7 +187,7 @@ export default function ReconcileControl({
               disabled={!!busy || active || !files.ledger || !files.statement}
               onClick={upload}
             >
-              <Upload size={15} />
+              <UploadIcon size={15} />
               {busy === "upload" ? "Validating…" : "Upload both files"}
             </button>
           </div>
@@ -206,15 +212,15 @@ export default function ReconcileControl({
               <>
                 <div className={`status-dot ${job.status}`} />
                 <span>
-                  {job.status}
-                  {job.breaks_detected != null
-                    ? ` · ${job.breaks_detected} breaks`
+                  {STATUS_TEXT[job.status] || job.status}
+                  {job.status === "complete" && job.breaks_detected != null
+                    ? `, ${job.breaks_detected} breaks`
                     : ""}
                 </span>
               </>
             ) : (
               <span>
-                {ready ? "Ready to compare" : "Upload both files to begin"}
+                {ready ? "Ready to run" : "Upload both files to begin"}
               </span>
             )}
           </div>
@@ -224,7 +230,7 @@ export default function ReconcileControl({
             disabled={!!busy || active || !ready || dirty}
             onClick={run}
           >
-            <Play size={15} />
+            <PlayIcon size={15} />
             {busy === "run"
               ? "Starting…"
               : DEMO_MODE

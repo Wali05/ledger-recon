@@ -40,7 +40,9 @@ try {
   }
   assert.ok(ready, "Demo preview did not start. Build the demo first.");
   await mkdir(screenshots, { recursive: true });
-  browser = await chromium.launch();
+  browser = await chromium.launch({
+    executablePath: process.env.CHROMIUM_PATH || undefined,
+  });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 1440 },
     locale: "en-GB",
@@ -100,7 +102,7 @@ try {
   await rows.first().waitFor();
   assert.ok(
     (await rows.locator("td:nth-child(2)").allTextContents()).every((text) =>
-      text.includes("DUPLICATE"),
+      text.includes("Duplicate"),
     ),
   );
   await page.getByLabel("Break type", { exact: true }).selectOption("ALL");
@@ -134,11 +136,18 @@ try {
     animations: "disabled",
   });
   await dialog
+    .getByLabel("Note for the record (optional)")
+    .fill("Matched to bank fee");
+  await dialog
     .getByRole("button", { name: "Mark resolved", exact: true })
     .click();
   await page.waitForFunction(
     () => document.querySelectorAll(".stat-value")[2]?.textContent === "1",
   );
+  await dialog.getByRole("button", { name: "Reopen", exact: true }).waitFor();
+  const history = await dialog.locator(".history-list").innerText();
+  assert.match(history, /resolved by demo visitor/i);
+  assert.match(history, /Matched to bank fee/);
   await page.keyboard.press("Escape");
   assert.equal(await dialog.count(), 0);
   await page
@@ -207,7 +216,7 @@ try {
     "The static demo must not require a backend",
   );
   console.log(
-    "Browser checks passed: desktop/mobile, filtering, pagination, sorting, evidence, resolve, replay, reload, reset, CSV, keyboard, and no API dependency.",
+    "Browser checks passed: desktop/mobile, filtering, pagination, sorting, evidence, resolve with note and history, replay, reload, reset, CSV, keyboard, and no API dependency.",
   );
 } finally {
   await browser?.close();

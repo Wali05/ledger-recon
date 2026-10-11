@@ -1,20 +1,37 @@
+import {
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  DownloadIcon,
+  EmptySheetIcon,
+} from "./Icons";
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, FileSearch } from "lucide-react";
 import { getBreaks, exportBreaks } from "../api";
-import { BREAK_TYPE_OPTIONS } from "../constants";
-import { formatAmount, formatDate } from "../format";
+import { BREAK_LABELS, BREAK_TYPE_OPTIONS } from "../constants";
+import { formatAmount } from "../format";
 import BreakTypeBadge from "./BreakTypeBadge";
 
 const PAGE_SIZE = 25;
 const COLUMNS = [
   ["transaction_id", "Transaction"],
-  ["break_type", "Break type"],
-  ["internal_amount", "Internal amount"],
-  ["external_amount", "External amount"],
-  ["delta_amount", "Difference"],
-  ["detected_at", "Detected"],
+  ["break_type", "Break"],
+  ["internal_amount", "Ledger", true],
+  ["external_amount", "Bank", true],
+  ["delta_amount", "Difference", true],
   ["resolved", "Status"],
 ];
+
+function Amount({ value, signed = false }) {
+  if (value === null || value === undefined)
+    return <td className="amount amount-empty">—</td>;
+  const negative = String(value).startsWith("-");
+  const zero = /^-?0*(\.0*)?$/.test(String(value));
+  const tone = zero
+    ? "amount-empty"
+    : signed && negative
+      ? "amount-negative"
+      : "";
+  return <td className={`amount ${tone}`}>{formatAmount(value)}</td>;
+}
 
 export default function BreaksTable({
   source,
@@ -87,7 +104,7 @@ export default function BreaksTable({
     <section className="table-wrap" aria-labelledby="breaks-title">
       <div className="table-header">
         <h2 id="breaks-title" className="table-title">
-          Reconciliation breaks{" "}
+          Breaks{" "}
           <span className="table-count">({data.total.toLocaleString()})</span>
         </h2>
         <div className="table-filters">
@@ -108,7 +125,7 @@ export default function BreaksTable({
           >
             {BREAK_TYPE_OPTIONS.map((type) => (
               <option key={type} value={type}>
-                {type === "ALL" ? "All break types" : type.replaceAll("_", " ")}
+                {type === "ALL" ? "All break types" : BREAK_LABELS[type]}
               </option>
             ))}
           </select>
@@ -128,7 +145,7 @@ export default function BreaksTable({
             <option value="true">Resolved</option>
           </select>
           <button className="action-btn" onClick={download}>
-            <Download size={15} />
+            <DownloadIcon size={15} />
             Export CSV
           </button>
         </div>
@@ -144,9 +161,13 @@ export default function BreaksTable({
         </div>
       ) : !data.items.length ? (
         <div className="empty-state">
-          <FileSearch size={34} />
-          <h3>No breaks in this view</h3>
-          <p>Run reconciliation or change the filters to see results.</p>
+          <EmptySheetIcon size={34} />
+          <h3>No breaks to show</h3>
+          <p>
+            {source === "uploaded"
+              ? "Upload both files and run reconciliation to see breaks here."
+              : "Run reconciliation, or clear the filters above."}
+          </p>
         </div>
       ) : (
         <div className="table-scroll">
@@ -156,10 +177,11 @@ export default function BreaksTable({
             </caption>
             <thead>
               <tr>
-                {COLUMNS.map(([field, label]) => (
+                {COLUMNS.map(([field, label, numeric]) => (
                   <th
                     key={field}
                     scope="col"
+                    className={numeric ? "num" : undefined}
                     aria-sort={
                       filters.sort_by === field
                         ? filters.sort_dir === "asc"
@@ -180,30 +202,30 @@ export default function BreaksTable({
                     </button>
                   </th>
                 ))}
-                <th scope="col">Review</th>
+                <th scope="col">
+                  <span className="sr-only">Evidence</span>
+                </th>
               </tr>
             </thead>
             <tbody>
               {data.items.map((record) => (
-                <tr key={record.break_id}>
+                <tr
+                  key={record.break_id}
+                  className="break-row"
+                  onClick={(event) => {
+                    if (!event.target.closest("button"))
+                      onSelectBreak(record.break_id);
+                  }}
+                >
                   <td>
                     <span className="txn-id">{record.transaction_id}</span>
                   </td>
                   <td>
                     <BreakTypeBadge type={record.break_type} />
                   </td>
-                  <td className="amount">
-                    {formatAmount(record.internal_amount, record.currency)}
-                  </td>
-                  <td className="amount">
-                    {formatAmount(record.external_amount, record.currency)}
-                  </td>
-                  <td
-                    className={`amount ${String(record.delta_amount).startsWith("-") ? "amount-negative" : "amount-positive"}`}
-                  >
-                    {formatAmount(record.delta_amount, record.currency)}
-                  </td>
-                  <td>{formatDate(record.detected_at)}</td>
+                  <Amount value={record.internal_amount} />
+                  <Amount value={record.external_amount} />
+                  <Amount value={record.delta_amount} signed />
                   <td>
                     <span
                       className={`badge badge-${record.resolved ? "resolved" : "unresolved"}`}
@@ -213,11 +235,11 @@ export default function BreaksTable({
                   </td>
                   <td>
                     <button
-                      className="action-btn"
+                      className="row-open"
                       aria-label={`View break for ${record.transaction_id}`}
                       onClick={() => onSelectBreak(record.break_id)}
                     >
-                      View
+                      Evidence
                     </button>
                   </td>
                 </tr>
@@ -228,7 +250,7 @@ export default function BreaksTable({
       )}
       <div className="pagination">
         <span className="pagination-info">
-          Page {filters.page} of {pages} · {data.total.toLocaleString()} breaks
+          Page {filters.page} of {pages}
         </span>
         <div className="pagination-btns">
           <button
@@ -236,8 +258,8 @@ export default function BreaksTable({
             disabled={loading || filters.page <= 1}
             onClick={() => setFilters({ ...filters, page: filters.page - 1 })}
           >
-            <ChevronLeft size={15} />
-            Prev
+            <ChevronLeftIcon size={15} />
+            Previous
           </button>
           <button
             className="action-btn"
@@ -245,7 +267,7 @@ export default function BreaksTable({
             onClick={() => setFilters({ ...filters, page: filters.page + 1 })}
           >
             Next
-            <ChevronRight size={15} />
+            <ChevronRightIcon size={15} />
           </button>
         </div>
       </div>

@@ -9,10 +9,9 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: Object.fromEntries(
-      ["/reconcile", "/breaks", "/stats", "/health"].map((path) => [
-        path,
-        target,
-      ]),
+      ["/reconcile", "/breaks", "/stats", "/health", "/session", "/audit"].map(
+        (path) => [path, target],
+      ),
     ),
   },
 });

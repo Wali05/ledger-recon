@@ -1,13 +1,22 @@
+import {
+  ArrowUpRightIcon,
+  BrandMark,
+  LedgerIcon,
+  UndoIcon,
+  UploadIcon,
+} from "./components/Icons";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Scale, ExternalLink, RotateCcw } from "lucide-react";
-import { DEMO_MODE, getStats, resetDemo } from "./api";
+import { DEMO_MODE, getSession, getStats, resetDemo, setApiKey } from "./api";
 import BreakDetailModal from "./components/BreakDetailModal";
-import ReconcileControl from "./components/ReconcileControl";
-import StatsCards from "./components/StatsCards";
-import BreaksTable from "./components/BreaksTable";
-import Toast from "./components/Toast";
 import BreaksChart from "./components/BreaksChart";
+import BreaksTable from "./components/BreaksTable";
+import ReconcileControl from "./components/ReconcileControl";
+import SignIn from "./components/SignIn";
+import StatsCards from "./components/StatsCards";
+import Toast from "./components/Toast";
 import "./index.css";
+
+const REPO = "https://github.com/Wali05/ledger-recon";
 
 export default function App() {
   const [source, setSource] = useState("synthetic");
@@ -17,7 +26,11 @@ export default function App() {
   const [demoReset, setDemoReset] = useState(0);
   const [selectedBreak, setSelectedBreak] = useState(null);
   const [toasts, setToasts] = useState([]);
+  // undefined = checking, null = signed out, otherwise { auth_required, reviewer }
+  const [session, setSession] = useState(undefined);
+  const [signInError, setSignInError] = useState("");
   const timers = useRef(new Set());
+
   const addToast = useCallback((message, type = "success") => {
     const id = crypto.randomUUID();
     setToasts((previous) => [...previous, { id, message, type }]);
@@ -32,7 +45,43 @@ export default function App() {
     return () => activeTimers.forEach(clearTimeout);
   }, []);
   const refresh = useCallback(() => setRefreshSignal((value) => value + 1), []);
+
+  const checkSession = useCallback(async () => {
+    try {
+      const current = await getSession();
+      setSession(current.auth_required && !current.reviewer ? null : current);
+      return current;
+    } catch {
+      // API unreachable: show the normal connection error instead of sign-in.
+      setSession({ auth_required: false, reviewer: null });
+      return null;
+    }
+  }, []);
   useEffect(() => {
+    checkSession();
+    const signOut = () => {
+      setApiKey("");
+      setSession(null);
+    };
+    window.addEventListener("ledger-recon:unauthorized", signOut);
+    return () =>
+      window.removeEventListener("ledger-recon:unauthorized", signOut);
+  }, [checkSession]);
+  async function signIn(key) {
+    setApiKey(key);
+    const current = await checkSession();
+    if (current?.reviewer) {
+      setSignInError("");
+      refresh();
+    } else {
+      setApiKey("");
+      setSignInError("That key was not accepted.");
+    }
+  }
+
+  const ready = session !== undefined && session !== null;
+  useEffect(() => {
+    if (!ready) return;
     const controller = new AbortController();
     setError("");
     getStats(source, controller.signal)
@@ -43,7 +92,8 @@ export default function App() {
         if (error.name !== "AbortError") setError(error.message);
       });
     return () => controller.abort();
-  }, [source, refreshSignal]);
+  }, [source, refreshSignal, ready]);
+
   function changeSource(value) {
     setSource(value);
     setStats(null);
@@ -56,111 +106,146 @@ export default function App() {
     refresh();
     addToast("Demo review state reset");
   }
+
+  const ledgerRows = stats?.total_transactions_in_ledger;
+  const statementRows = stats?.total_transactions_in_statement;
   return (
     <div className="app">
-      <nav className="navbar" aria-label="Project navigation">
+      <nav className="navbar" aria-label="Workspace">
         <a className="navbar-brand" href="/">
-          <span className="logo-icon">
-            <Scale size={19} />
-          </span>
-          <span>Ledger Recon</span>
+          <BrandMark />
+          Ledger Recon
         </a>
+        {ready && (
+          <div className="nav-section">
+            <span className="nav-heading">Dataset</span>
+            <div className="seg-toggle" role="group" aria-label="Dataset">
+              <button
+                className={`seg-btn ${source === "synthetic" ? "active" : ""}`}
+                aria-pressed={source === "synthetic"}
+                onClick={() => changeSource("synthetic")}
+              >
+                <LedgerIcon size={18} />
+                Sample dataset
+              </button>
+              <button
+                className={`seg-btn ${source === "uploaded" ? "active" : ""}`}
+                aria-pressed={source === "uploaded"}
+                onClick={() => changeSource("uploaded")}
+              >
+                <UploadIcon size={18} />
+                Your CSV files
+              </button>
+            </div>
+          </div>
+        )}
         <div className="navbar-meta">
-          <span className={`mode-indicator ${DEMO_MODE ? "demo" : ""}`} />
-          <span>{DEMO_MODE ? "Interactive demo" : "Connected workspace"}</span>
+          <span className="mode-line">
+            <span className={`mode-indicator ${DEMO_MODE ? "demo" : ""}`} />
+            <span>
+              {DEMO_MODE ? "Interactive demo" : "Connected workspace"}
+            </span>
+          </span>
+          {!DEMO_MODE && session?.auth_required && session.reviewer && (
+            <span className="reviewer-chip">
+              {session.reviewer}
+              <button
+                onClick={() => {
+                  setApiKey("");
+                  setSession(null);
+                }}
+              >
+                Sign out
+              </button>
+            </span>
+          )}
           <a
             className="source-link"
-            href="https://github.com/Wali05/ledger-recon"
+            href={REPO}
             target="_blank"
             rel="noreferrer"
           >
-            <ExternalLink size={16} />
-            Source
+            <ArrowUpRightIcon size={15} />
+            <span>Source on GitHub</span>
           </a>
         </div>
       </nav>
+
       <main>
-        <div className="page-head">
-          <div>
-            <p className="eyebrow">FINANCIAL OPERATIONS / RECONCILIATION</p>
-            <h1 className="page-title">
-              Every difference <em>accounted for.</em>
-            </h1>
-            <p className="page-sub">
-              Find discrepancies between a ledger and bank statement. Inspect
-              the evidence before you resolve.
-            </p>
+        {session === null ? (
+          <SignIn onSubmit={signIn} error={signInError} />
+        ) : session === undefined ? (
+          <div className="loading-wrap" role="status">
+            <div className="spinner" />
+            Connecting
           </div>
-          <div className="seg-toggle" aria-label="Dataset">
-            <button
-              className={`seg-btn ${source === "synthetic" ? "active" : ""}`}
-              aria-pressed={source === "synthetic"}
-              onClick={() => changeSource("synthetic")}
-            >
-              Sample dataset
-            </button>
-            <button
-              className={`seg-btn ${source === "uploaded" ? "active" : ""}`}
-              aria-pressed={source === "uploaded"}
-              onClick={() => changeSource("uploaded")}
-            >
-              Your CSV files
-            </button>
-          </div>
-        </div>
-        {DEMO_MODE && (
-          <div className="demo-banner">
-            <div>
-              <strong>Sample results, real matching rules.</strong>
-              <p>
-                The Python engine generated these discrepancies. Replaying loads
-                the saved results; resolution choices are local to this browser.
+        ) : (
+          <>
+            <header className="page-head">
+              <div>
+                <p className="eyebrow">
+                  {source === "synthetic" ? "Sample dataset" : "Your CSV files"}
+                </p>
+                <h1 className="page-title">Ledger against bank statement</h1>
+                <p className="page-sub">
+                  {ledgerRows && statementRows
+                    ? `${ledgerRows.toLocaleString()} ledger rows compared with ${statementRows.toLocaleString()} statement rows. Every break keeps its evidence until someone resolves it.`
+                    : "Compare an internal ledger with a bank statement, inspect each break's evidence and record who resolved it."}
+                </p>
+              </div>
+            </header>
+            {DEMO_MODE && (
+              <div className="demo-banner">
+                <p>
+                  <strong>Interactive demo.</strong> These breaks were produced
+                  by the Python matcher. Your review decisions stay in this
+                  browser.
+                </p>
+                <button className="action-btn" onClick={reset}>
+                  <UndoIcon size={14} />
+                  Reset demo
+                </button>
+              </div>
+            )}
+            {error && (
+              <p className="error-message connection-error" role="alert">
+                Could not reach the API: {error}. Start the backend, then retry.
+                <button className="action-btn" onClick={refresh}>
+                  Retry
+                </button>
               </p>
-            </div>
-            <button className="action-btn" onClick={reset}>
-              <RotateCcw size={14} />
-              Reset demo
-            </button>
-          </div>
+            )}
+            <ReconcileControl
+              key={`control-${source}-${demoReset}`}
+              source={source}
+              stats={stats}
+              onChange={refresh}
+              addToast={addToast}
+            />
+            <StatsCards stats={stats} />
+            {stats?.breaks_by_type?.length > 0 && <BreaksChart stats={stats} />}
+            {source === "uploaded" && stats?.total_breaks_detected > 0 && (
+              <p className="dataset-caption">
+                Uploaded files have no answer key, so these counts describe what
+                was found, not how accurate it is.
+              </p>
+            )}
+            <BreaksTable
+              key={`breaks-${source}-${demoReset}`}
+              source={source}
+              onSelectBreak={setSelectedBreak}
+              refreshSignal={refreshSignal}
+              addToast={addToast}
+            />
+            <footer className="project-footer">
+              <span>
+                Deterministic rules decide; people resolve. Nothing here moves
+                money.
+              </span>
+              <a href={`${REPO}#how-it-works`}>How the matcher works</a>
+            </footer>
+          </>
         )}
-        {error && (
-          <p className="error-message connection-error" role="alert">
-            API unavailable: {error}. Start the backend or use the demo build.
-            <button className="action-btn" onClick={refresh}>
-              Retry connection
-            </button>
-          </p>
-        )}
-        <ReconcileControl
-          key={`control-${source}-${demoReset}`}
-          source={source}
-          stats={stats}
-          onChange={refresh}
-          addToast={addToast}
-        />
-        <StatsCards stats={stats} />
-        {source === "uploaded" && (
-          <p className="dataset-caption">
-            Uploaded data has no labelled ground truth. These counts describe
-            detected discrepancies, not accuracy.
-          </p>
-        )}
-        {stats?.breaks_by_type?.length > 0 && <BreaksChart stats={stats} />}
-        <BreaksTable
-          key={`breaks-${source}-${demoReset}`}
-          source={source}
-          onSelectBreak={setSelectedBreak}
-          refreshSignal={refreshSignal}
-          addToast={addToast}
-        />
-        <footer className="project-footer">
-          <span>
-            Deterministic rules. Human review. No automatic payment changes.
-          </span>
-          <a href="https://github.com/Wali05/ledger-recon">
-            Explore the implementation ↗
-          </a>
-        </footer>
       </main>
       {selectedBreak && (
         <BreakDetailModal

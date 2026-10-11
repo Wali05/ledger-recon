@@ -1,62 +1,50 @@
-import { Layers, TriangleAlert, CircleCheck, Percent } from "lucide-react";
-
-// ─── Stats Cards ──────────────────────────────────────────────────────────────
 export default function StatsCards({ stats }) {
   if (!stats) return null;
+  const total = stats.total_breaks_detected ?? 0;
+  const resolved = stats.total_breaks_resolved ?? 0;
+  const open = Math.max(total - resolved, 0);
   const rate = stats.resolution_rate_pct ?? 0;
+  const count = (value) => value?.toLocaleString() ?? "—";
   return (
-    <div className="stats-grid">
-      <div className="stat-card" style={{ "--accent-color": "#4f6db8" }}>
-        <div className="stat-head">
-          <div className="stat-value">
-            {stats.total_transactions_in_ledger?.toLocaleString() ?? "—"}
-          </div>
-          <div className="stat-icon">
-            <Layers size={19} />
-          </div>
-        </div>
+    <section className="stats-grid" aria-label="Summary">
+      <div className="stat-card">
         <div className="stat-label">Ledger rows</div>
-      </div>
-      <div className="stat-card" style={{ "--accent-color": "#c0442e" }}>
-        <div className="stat-head">
-          <div className="stat-value">
-            {stats.total_breaks_detected?.toLocaleString() ?? "—"}
-          </div>
-          <div className="stat-icon">
-            <TriangleAlert size={19} />
-          </div>
+        <div className="stat-value">
+          {count(stats.total_transactions_in_ledger)}
         </div>
-        <div className="stat-label">Detected breaks</div>
-      </div>
-      <div className="stat-card" style={{ "--accent-color": "#3d8a5f" }}>
-        <div className="stat-head">
-          <div className="stat-value">
-            {stats.total_breaks_resolved?.toLocaleString() ?? "—"}
-          </div>
-          <div className="stat-icon">
-            <CircleCheck size={19} />
-          </div>
+        <div className="stat-note">
+          against {count(stats.total_transactions_in_statement)} statement rows
         </div>
-        <div className="stat-label">Resolved breaks</div>
       </div>
-      <div className="stat-card" style={{ "--accent-color": "#8560ad" }}>
-        <div className="stat-head">
-          <div className="stat-value">{rate.toFixed(1)}%</div>
-          <div className="stat-icon">
-            <Percent size={19} />
-          </div>
+      <div className="stat-card breaks">
+        <div className="stat-label">Breaks found</div>
+        <div className="stat-value">{count(total)}</div>
+        <div className="stat-note">
+          {stats.breaks_by_type?.length || 0} kinds of difference
         </div>
-        <div className="stat-label">Resolution rate</div>
-        <div className="progress-bar" style={{ marginTop: 12 }}>
+      </div>
+      <div className="stat-card resolved">
+        <div className="stat-label">Resolved</div>
+        <div className="stat-value">{count(resolved)}</div>
+        <div
+          className="progress-bar"
+          role="progressbar"
+          aria-label="Breaks resolved"
+          aria-valuenow={Math.round(rate)}
+          aria-valuemin={0}
+          aria-valuemax={100}
+        >
           <div
             className="progress-fill"
-            style={{
-              width: `${Math.min(rate, 100)}%`,
-              background: "linear-gradient(90deg,#8560ad,#6d4c93)",
-            }}
+            style={{ width: `${Math.min(rate, 100)}%` }}
           />
         </div>
       </div>
-    </div>
+      <div className="stat-card">
+        <div className="stat-label">Still open</div>
+        <div className="stat-value">{count(open)}</div>
+        <div className="stat-note">{rate.toFixed(1)}% reviewed</div>
+      </div>
+    </section>
   );
 }

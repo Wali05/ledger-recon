@@ -69,6 +69,9 @@ test("numeric sorting retains precision beyond JavaScript's safe integer boundar
     formatAmount("90071992547409.1234", "USD"),
     "USD 90,071,992,547,409.1234",
   );
+  assert.equal(formatAmount("5091.8100", "USD"), "USD 5,091.81");
+  assert.equal(formatAmount("-0.0300"), "-0.03");
+  assert.equal(formatAmount("12.0050"), "12.005");
 });
 
 test("export follows filters and still emits headers for an empty view", async () => {
@@ -111,4 +114,28 @@ test("the public demo cannot upload data or generate AI explanations", async () 
     /disabled/,
   );
   assert.equal((await client.request("/stats")).ai_enabled, false);
+});
+
+test("demo keeps a review history with notes and supports reopening", async () => {
+  const storage = memory(),
+    client = createDemoClient(snapshot, storage);
+  const first = (await client.request("/breaks?page_size=1")).items[0];
+  const url = `/breaks/${first.break_id}`;
+  const body = (note) => ({ method: "POST", body: JSON.stringify({ note }) });
+  await client.request(`${url}/resolve`, body("Fee confirmed"));
+  const repeat = await client.request(`${url}/resolve`, body("again"));
+  assert.equal(repeat.message, "Break was already resolved");
+  const reopened = await client.request(`${url}/reopen`, body(" "));
+  assert.equal(reopened.resolved, false);
+  const reloaded = createDemoClient(snapshot, storage);
+  const events = await reloaded.request(`${url}/events`);
+  assert.deepEqual(
+    events.map((event) => [event.action, event.note]),
+    [
+      ["resolved", "Fee confirmed"],
+      ["reopened", null],
+    ],
+  );
+  assert.equal((await reloaded.request(url)).resolved, false);
+  assert.equal((await reloaded.request("/session")).reviewer, "demo visitor");
 });

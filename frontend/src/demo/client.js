@@ -14,6 +14,7 @@ const EXPORT_FIELDS = [
   "detected_at",
   "resolved",
   "resolved_at",
+  "resolved_by",
   "source",
   "evidence_side",
   "occurrence",
@@ -40,9 +41,11 @@ function csvCell(value, protectFormula = true) {
   return '"' + text.replaceAll('"', '""') + '"';
 }
 
+const DEMO_REVIEWER = "demo visitor";
+
 export function createDemoClient(snapshot, storage) {
   const key = `ledger-recon.demo.${snapshot.input_fingerprint}`;
-  let state = { resolutions: {}, jobs: [] };
+  let state = { resolutions: {}, jobs: [], events: [] };
   try {
     const saved = JSON.parse(storage?.getItem(key) || "null");
     if (
@@ -51,7 +54,7 @@ export function createDemoClient(snapshot, storage) {
       saved.resolutions &&
       Array.isArray(saved.jobs)
     )
-      state = saved;
+      state = { events: [], ...saved };
   } catch {
     /* Storage may be disabled or contain an older format. */
   }
@@ -67,6 +70,7 @@ export function createDemoClient(snapshot, storage) {
       ...item,
       resolved: !!state.resolutions[item.break_id],
       resolved_at: state.resolutions[item.break_id] || null,
+      resolved_by: state.resolutions[item.break_id] ? DEMO_REVIEWER : null,
     }));
   }
   function filtered(params) {
@@ -81,7 +85,7 @@ export function createDemoClient(snapshot, storage) {
   }
   return {
     reset() {
-      state = { resolutions: {}, jobs: [] };
+      state = { resolutions: {}, jobs: [], events: [] };
       save();
     },
     async request(path, options = {}) {
@@ -91,6 +95,8 @@ export function createDemoClient(snapshot, storage) {
         path,
         "https://demo.invalid",
       );
+      if (pathname === "/session")
+        return { auth_required: false, reviewer: DEMO_REVIEWER };
       if (pathname === "/stats") {
         const items = filtered(params);
         const resolved = items.filter((item) => item.resolved).length;
@@ -203,14 +209,45 @@ export function createDemoClient(snapshot, storage) {
         const [, , id, action] = pathname.split("/");
         const item = records().find((item) => item.break_id === id);
         if (!item) throw new Error("Demo break not found");
-        if (action === "resolve") {
-          state.resolutions[id] ||= new Date().toISOString();
-          save();
+        if (action === "events")
+          return structuredClone(
+            state.events.filter((event) => event.break_id === id),
+          );
+        if (action === "resolve" || action === "reopen") {
+          const resolve = action === "resolve";
+          const changed = resolve !== item.resolved;
+          if (changed) {
+            const now = new Date().toISOString();
+            if (resolve) state.resolutions[id] = now;
+            else delete state.resolutions[id];
+            let note = null;
+            try {
+              note = JSON.parse(options.body || "{}").note?.trim() || null;
+            } catch {
+              /* No body. */
+            }
+            state.events.push({
+              event_id: crypto.randomUUID(),
+              break_id: id,
+              source: "synthetic",
+              transaction_id: item.transaction_id,
+              break_type: item.break_type,
+              action: resolve ? "resolved" : "reopened",
+              reviewer: DEMO_REVIEWER,
+              note,
+              created_at: now,
+            });
+            save();
+          }
+          const verb = resolve ? "resolved" : "reopened";
           return {
             break_id: id,
-            resolved: true,
-            resolved_at: state.resolutions[id],
-            message: "Resolved in your browser demo",
+            resolved: resolve,
+            resolved_at: state.resolutions[id] || null,
+            resolved_by: resolve ? DEMO_REVIEWER : null,
+            message: changed
+              ? `Break ${verb} in your browser demo`
+              : `Break was already ${verb}`,
           };
         }
         if (action === "ai-explain")

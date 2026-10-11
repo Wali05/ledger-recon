@@ -5,7 +5,9 @@ export function formatAmount(value, currency) {
   if (!match) return String(value);
   const [, sign, integer, fraction = ""] = match;
   const grouped = integer.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${currency ? currency + " " : ""}${sign}${grouped}.${fraction.padEnd(4, "0")}`;
+  // Show cents; keep sub-cent digits only when they carry information.
+  const shown = fraction.replace(/0+$/, "").padEnd(2, "0");
+  return `${currency ? currency + " " : ""}${sign}${grouped}.${shown}`;
 }
 export const formatDate = (value) =>
   value
