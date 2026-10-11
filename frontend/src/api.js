@@ -1,93 +1,62 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+const env = import.meta.env;
+const API_BASE = (env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+export const DEMO_MODE =
+  env.VITE_DEMO_MODE === "true" ||
+  (env.VITE_DEMO_MODE !== "false" && env.PROD && !API_BASE);
 
-async function request(path, options = {}) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`${res.status} ${err}`);
-  }
-  return res.json();
+async function demo() {
+  const { client } = await import("./demo/index.js");
+  return client;
 }
 
-// ── Reconciliation ──────────────────────────────────────────────────────────
-export const triggerReconciliation = (source = "synthetic") =>
-  request(`/reconcile/run?source=${source}`, { method: "POST" });
-
-export const getJobStatus = (jobId) =>
-  request(`/reconcile/status/${jobId}`);
-
-export const uploadLedger = async (file) => {
-  const formData = new FormData();
-  formData.append("file", file);
-  const res = await fetch(`${API_BASE}/reconcile/upload/ledger`, {
-    method: "POST",
-    body: formData,
+async function request(path, options = {}, blob = false) {
+  if (DEMO_MODE) return (await demo()).request(path, options);
+  const response = await fetch(API_BASE + path, {
+    ...options,
+    headers: options.headers,
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to upload ledger");
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const detail = Array.isArray(body.detail)
+      ? body.detail.map((error) => error.msg).join("; ")
+      : body.detail;
+    throw new Error(detail || `Request failed (${response.status})`);
   }
-  return res.json();
+  return blob ? response.blob() : response.json();
+}
+
+const query = (params) =>
+  new URLSearchParams(
+    Object.entries(params).filter(
+      ([, value]) =>
+        value !== undefined &&
+        value !== null &&
+        value !== "" &&
+        value !== "ALL",
+    ),
+  ).toString();
+
+export const triggerReconciliation = (source) =>
+  request(`/reconcile/run?${query({ source })}`, { method: "POST" });
+export const getJobStatus = (id, signal) =>
+  request(`/reconcile/status/${id}`, { signal });
+export const getJobs = (source, signal) =>
+  request(`/reconcile/jobs?${query({ source })}`, { signal });
+export const getBreaks = (params, signal) =>
+  request(`/breaks?${query(params)}`, { signal });
+export const getStats = (source, signal) =>
+  request(`/stats?${query({ source })}`, { signal });
+export const getBreak = (id, signal) => request(`/breaks/${id}`, { signal });
+export const resolveBreak = (id) =>
+  request(`/breaks/${id}/resolve`, { method: "POST" });
+export const explainBreakWithAI = (id) =>
+  request(`/breaks/${id}/ai-explain`, { method: "POST" });
+export const exportBreaks = (params) =>
+  request(`/breaks/export?${query(params)}`, {}, true);
+export const uploadPair = (ledger, statement) => {
+  const body = new FormData();
+  body.append("ledger", ledger);
+  body.append("statement", statement);
+  return request("/reconcile/upload", { method: "POST", body });
 };
-
-export const uploadStatement = async (file) => {
-  const formData = new FormData();
-  formData.append("file", file);
-  const res = await fetch(`${API_BASE}/reconcile/upload/statement`, {
-    method: "POST",
-    body: formData,
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to upload statement");
-  }
-  return res.json();
-};
-
-// ── Breaks ──────────────────────────────────────────────────────────────────
-export const getBreaks = (params = {}) => {
-  const qs = new URLSearchParams();
-  if (params.break_type) qs.append("break_type", params.break_type);
-  if (params.resolved !== undefined && params.resolved !== "") qs.append("resolved", params.resolved);
-  if (params.page) qs.append("page", params.page);
-  if (params.page_size) qs.append("page_size", params.page_size);
-  if (params.source) qs.append("source", params.source);
-  return request(`/breaks?${qs.toString()}`);
-};
-
-export const exportBreaks = async (params = {}) => {
-  const qs = new URLSearchParams();
-  if (params.break_type) qs.append("break_type", params.break_type);
-  if (params.resolved !== undefined && params.resolved !== "") qs.append("resolved", params.resolved);
-  if (params.source) qs.append("source", params.source);
-  
-  const res = await fetch(`${API_BASE}/breaks/export?${qs.toString()}`);
-  if (!res.ok) {
-    throw new Error("Export failed");
-  }
-  return res.blob();
-};
-
-export const getBreak = (breakId) => request(`/breaks/${breakId}`);
-
-export const resolveBreak = (breakId) =>
-  request(`/breaks/${breakId}/resolve`, { method: "POST" });
-
-export const explainBreakWithAI = async (breakId) => {
-  const res = await fetch(`${API_BASE}/breaks/${breakId}/ai-explain`, { method: "POST" });
-  if (!res.ok) {
-    if (res.status === 429) {
-      throw new Error("AI rate limit reached. Please try again later.");
-    }
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Failed to fetch AI explanation");
-  }
-  return res.json();
-};
-
-// ── Stats ───────────────────────────────────────────────────────────────────
-export const getStats = (source = "synthetic") => request(`/stats?source=${source}`);
-
+export const resetDemo = async () => (await demo()).reset();

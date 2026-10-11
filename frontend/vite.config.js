@@ -1,19 +1,18 @@
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
 
-// https://vite.dev/config/
+const target = process.env.API_PROXY_TARGET || "http://localhost:8000";
 export default defineConfig({
   plugins: [react()],
   server: {
-    host: '0.0.0.0',
+    host: "127.0.0.1",
     port: 5173,
-    // In dev, proxy calls to /reconcile and /breaks to the FastAPI backend
-    // so we avoid CORS issues during local (non-Docker) development
-    proxy: {
-      '/reconcile': 'http://localhost:8000',
-      '/breaks': 'http://localhost:8000',
-      '/stats': 'http://localhost:8000',
-      '/health': 'http://localhost:8000',
-    },
+    strictPort: true,
+    proxy: Object.fromEntries(
+      ["/reconcile", "/breaks", "/stats", "/health"].map((path) => [
+        path,
+        target,
+      ]),
+    ),
   },
-})
+});
