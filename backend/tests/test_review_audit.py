@@ -109,3 +109,14 @@ def test_note_length_is_validated(client):
     record = first_break(client)
     response = client.post(f"/breaks/{record['break_id']}/resolve", json={"note": "x" * 1001})
     assert response.status_code == 422
+
+
+def test_hosted_postgres_ssl_options_work_for_both_drivers():
+    from app.database import database_urls
+
+    async_url, sync_url = database_urls(
+        "postgres://u:p@db.example.com/app?sslmode=require&channel_binding=require"
+    )
+    assert async_url.drivername == "postgresql+asyncpg"
+    assert dict(async_url.query) == {"ssl": "require"}
+    assert sync_url.query["sslmode"] == "require"

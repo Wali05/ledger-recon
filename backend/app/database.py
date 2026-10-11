@@ -20,7 +20,16 @@ def database_urls(value: str):
     if backend == "sqlite":
         return url.set(drivername="sqlite+aiosqlite"), url.set(drivername="sqlite")
     if backend == "postgresql":
-        return url.set(drivername="postgresql+asyncpg"), url.set(drivername="postgresql+psycopg2")
+        # Hosted providers (Neon, Render, Supabase) append libpq options such as
+        # ?sslmode=require&channel_binding=require. psycopg2 understands them;
+        # asyncpg rejects them, so translate sslmode to its `ssl` argument.
+        query = dict(url.query)
+        sslmode = query.pop("sslmode", None)
+        query.pop("channel_binding", None)
+        if sslmode:
+            query["ssl"] = sslmode
+        async_url = url.set(drivername="postgresql+asyncpg", query=query)
+        return async_url, url.set(drivername="postgresql+psycopg2")
     raise ValueError("DATABASE_URL must use SQLite or PostgreSQL")
 
 
