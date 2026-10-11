@@ -15,9 +15,16 @@ from decimal import Decimal
 import pytest
 
 from app.engine.matcher import (
-    InternalRow, ExternalRow, run_matching,
-    AMOUNT_MISMATCH, MISSING_INTERNAL, MISSING_EXTERNAL,
-    DUPLICATE, TIMING_LAG, FX_ROUNDING, UNKNOWN,
+    AMOUNT_MISMATCH,
+    DUPLICATE,
+    FX_ROUNDING,
+    MISSING_EXTERNAL,
+    MISSING_INTERNAL,
+    TIMING_LAG,
+    UNKNOWN,
+    ExternalRow,
+    InternalRow,
+    run_matching,
 )
 
 BASE = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
@@ -50,12 +57,43 @@ def types_of(breaks):
 
 # ── The happy path ───────────────────────────────────────────────────────────
 
+
 def test_identical_rows_produce_no_breaks():
     breaks = run_matching([internal("T1", "100.00")], [external("T1", "100.00")])
     assert breaks == []
 
 
+@pytest.mark.parametrize("currency", ["EUR", "GBP", "JPY", "usd", " eur "])
+def test_zero_delta_is_never_fx_rounding(currency):
+    assert run_matching([internal("T1", "100", currency=currency)], [external("T1", "100")]) == []
+
+
+def test_same_instant_in_different_offsets_has_no_timing_break():
+    a = datetime.fromisoformat("2024-06-01T23:30:00-02:00")
+    b = datetime.fromisoformat("2024-06-02T01:30:00+00:00")
+    assert run_matching([internal("T1", "1", ts=a)], [external("T1", "1", ts=b)]) == []
+
+
+def test_duplicate_occurrences_on_both_sides_have_distinct_stable_identities():
+    rows = run_matching([internal("T1", "1")] * 3, [external("T1", "1")] * 3)
+    assert len(rows) == len({row.identity for row in rows}) == 4
+
+
+def test_fuzzy_pairing_is_independent_of_external_order_and_retains_partner_id():
+    a, b = external("A", "10.40"), external("B", "10.10")
+    for candidates in ([a, b], [b, a]):
+        result = run_matching([internal("T1", "10.00")], candidates)
+        pair = next(row for row in result if row.transaction_id == "T1")
+        assert pair.external_transaction_id == "B"
+
+
+def test_fuzzy_matching_does_not_pair_opposite_signed_payments():
+    result = run_matching([internal("T1", "0.10")], [external("T2", "-0.10")])
+    assert set(types_of(result)) == {MISSING_INTERNAL, MISSING_EXTERNAL}
+
+
 # ── One test per break type ──────────────────────────────────────────────────
+
 
 def test_amount_difference_is_amount_mismatch():
     breaks = run_matching([internal("T1", "100.00")], [external("T1", "98.00")])
@@ -127,6 +165,7 @@ def test_repeated_id_in_bank_feed_flags_extra_copies_only():
 
 # ── Phase 2: fuzzy fallback ──────────────────────────────────────────────────
 
+
 def test_mangled_id_is_recovered_by_fuzzy_match():
     """IDs don't line up, but the amount and date are close enough that Phase 2
     pairs them rather than reporting two separate 'missing' breaks."""
@@ -160,6 +199,7 @@ def test_fuzzy_match_respects_date_tolerance():
 
 # ── Determinism ──────────────────────────────────────────────────────────────
 
+
 def test_engine_is_deterministic():
     """Same input, same output. This is what makes the idempotent DB insert
     meaningful: a re-run produces an identical set of natural keys."""
@@ -167,7 +207,10 @@ def test_engine_is_deterministic():
     bank = [external("T1", "98.00")]
     first = run_matching(ledger, bank)
     second = run_matching(ledger, bank)
-    key = lambda bs: sorted((b.transaction_id, b.break_type) for b in bs)
+
+    def key(bs):
+        return sorted((b.transaction_id, b.break_type) for b in bs)
+
     assert key(first) == key(second)
 
 
