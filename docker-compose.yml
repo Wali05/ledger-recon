@@ -35,6 +35,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      API_KEYS: ${API_KEYS:-}
     depends_on:
       postgres: {condition: service_healthy}
       redis: {condition: service_healthy}

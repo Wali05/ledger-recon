@@ -106,6 +106,7 @@ class ReconciliationBreak(Base):
     detected_at = Column(UTCDateTime(), nullable=False, default=utcnow)
     resolved = Column(Boolean, nullable=False, default=False)
     resolved_at = Column(UTCDateTime())
+    resolved_by = Column(String(120))
     job_id = Column(GUID(), ForeignKey("reconciliation_jobs.job_id"))
     source = Column(String(20), nullable=False, default="synthetic")
     ai_explanation = Column(Text)
@@ -113,3 +114,24 @@ class ReconciliationBreak(Base):
         UniqueConstraint("source", "break_key", name="uq_break_source_key"),
         Index("ix_breaks_source_resolved_type", "source", "resolved", "break_type"),
     )
+
+
+class BreakEvent(Base):
+    """Append-only review history.
+
+    Events copy the break's identifying fields instead of using a foreign key, so
+    the history survives when an uploaded dataset and its breaks are replaced.
+    The API exposes no update or delete operation for this table.
+    """
+
+    __tablename__ = "break_events"
+    event_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    break_id = Column(GUID(), nullable=False, index=True)
+    source = Column(String(20), nullable=False)
+    transaction_id = Column(String, nullable=False)
+    break_type = Column(String(30), nullable=False)
+    action = Column(String(20), nullable=False)
+    reviewer = Column(String(120), nullable=False)
+    note = Column(Text)
+    created_at = Column(UTCDateTime(), nullable=False, default=utcnow)
+    __table_args__ = (Index("ix_break_events_source_created", "source", "created_at"),)

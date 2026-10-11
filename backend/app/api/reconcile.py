@@ -8,6 +8,7 @@ from sqlalchemy import case, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
+from app.auth import require_reviewer
 from app.celery_app import EAGER_MODE
 from app.database import get_async_session
 from app.models import (
@@ -27,7 +28,9 @@ from app.services.csv_import import MAX_BYTES, CSVValidationError, parse_csv
 from app.services.datasets import ensure_idle, lock_dataset, replace_feeds
 from app.tasks import reconciliation_task
 
-router = APIRouter(prefix="/reconcile", tags=["reconciliation"])
+router = APIRouter(
+    prefix="/reconcile", tags=["reconciliation"], dependencies=[Depends(require_reviewer)]
+)
 logger = logging.getLogger(__name__)
 
 

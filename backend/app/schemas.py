@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 Source = Literal["synthetic", "uploaded"]
 BreakType = Literal[
@@ -66,6 +66,7 @@ class BreakResponse(BaseModel):
     detected_at: datetime
     resolved: bool
     resolved_at: datetime | None = None
+    resolved_by: str | None = None
     job_id: UUID | None = None
     source: Source
     ai_explanation: str | None = None
@@ -91,11 +92,34 @@ class BreakListResponse(BaseModel):
     items: list[BreakResponse]
 
 
-class ResolveBreakResponse(BaseModel):
+class ReviewRequest(BaseModel):
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class ReviewResponse(BaseModel):
     break_id: UUID
     resolved: bool
-    resolved_at: datetime
+    resolved_at: datetime | None = None
+    resolved_by: str | None = None
     message: str
+
+
+class BreakEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    event_id: UUID
+    break_id: UUID
+    source: Source
+    transaction_id: str
+    break_type: str
+    action: Literal["resolved", "reopened"]
+    reviewer: str
+    note: str | None = None
+    created_at: datetime
+
+
+class SessionResponse(BaseModel):
+    auth_required: bool
+    reviewer: str | None = None
 
 
 class BreakTypeStat(BaseModel):

@@ -5,26 +5,29 @@ import io
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response
 from sqlalchemy import case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import require_reviewer
 from app.database import get_async_session
-from app.models import DatasetState, utcnow
+from app.models import BreakEvent, DatasetState, utcnow
 from app.models import ReconciliationBreak as Break
 from app.schemas import (
+    BreakEventResponse,
     BreakListResponse,
     BreakResponse,
     BreakType,
     BreakTypeStat,
-    ResolveBreakResponse,
+    ReviewRequest,
+    ReviewResponse,
     SortDirection,
     SortField,
     Source,
     StatsResponse,
 )
 
-router = APIRouter(tags=["breaks"])
+router = APIRouter(tags=["breaks"], dependencies=[Depends(require_reviewer)])
 
 
 def filters(source, break_type, resolved):
@@ -78,6 +81,7 @@ EXPORT_FIELDS = [
     "detected_at",
     "resolved",
     "resolved_at",
+    "resolved_by",
     "source",
     "evidence_side",
     "occurrence",
@@ -126,22 +130,97 @@ async def get_break(break_id: uuid.UUID, session: AsyncSession = Depends(get_asy
     return await require_break(session, break_id)
 
 
-@router.post("/breaks/{break_id}/resolve", response_model=ResolveBreakResponse)
-async def resolve_break(break_id: uuid.UUID, session: AsyncSession = Depends(get_async_session)):
-    await require_break(session, break_id)
-    # Conditional write: concurrent resolutions keep the first recorded timestamp.
+async def _review(session, break_id, *, resolve, reviewer, note):
+    """Change review state with a conditional write and log it in one transaction.
+
+    Repeating the same action is a no-op: the first timestamp, reviewer and
+    event stand, so double clicks and concurrent reviewers cannot rewrite history.
+    """
+    record = await require_break(session, break_id)
+    values = (
+        {"resolved": True, "resolved_at": utcnow(), "resolved_by": reviewer}
+        if resolve
+        else {"resolved": False, "resolved_at": None, "resolved_by": None}
+    )
     result = await session.execute(
         update(Break)
-        .where(Break.break_id == break_id, Break.resolved.is_(False))
-        .values(resolved=True, resolved_at=utcnow())
+        .where(Break.break_id == break_id, Break.resolved.is_(not resolve))
+        .values(**values)
     )
+    changed = bool(result.rowcount)
+    if changed:
+        session.add(
+            BreakEvent(
+                event_id=uuid.uuid4(),
+                break_id=break_id,
+                source=record.source,
+                transaction_id=record.transaction_id,
+                break_type=record.break_type,
+                action="resolved" if resolve else "reopened",
+                reviewer=reviewer,
+                note=(note or "").strip() or None,
+                created_at=utcnow(),
+            )
+        )
     await session.commit()
     record = await session.get(Break, break_id, populate_existing=True)
-    return ResolveBreakResponse(
+    verb = "resolved" if resolve else "reopened"
+    return ReviewResponse(
         break_id=break_id,
-        resolved=True,
+        resolved=record.resolved,
         resolved_at=record.resolved_at,
-        message="Break marked as resolved" if result.rowcount else "Break was already resolved",
+        resolved_by=record.resolved_by,
+        message=f"Break {verb}" if changed else f"Break was already {verb}",
+    )
+
+
+@router.post("/breaks/{break_id}/resolve", response_model=ReviewResponse)
+async def resolve_break(
+    break_id: uuid.UUID,
+    review: ReviewRequest | None = Body(default=None),
+    reviewer: str = Depends(require_reviewer),
+    session: AsyncSession = Depends(get_async_session),
+):
+    note = review.note if review else None
+    return await _review(session, break_id, resolve=True, reviewer=reviewer, note=note)
+
+
+@router.post("/breaks/{break_id}/reopen", response_model=ReviewResponse)
+async def reopen_break(
+    break_id: uuid.UUID,
+    review: ReviewRequest | None = Body(default=None),
+    reviewer: str = Depends(require_reviewer),
+    session: AsyncSession = Depends(get_async_session),
+):
+    note = review.note if review else None
+    return await _review(session, break_id, resolve=False, reviewer=reviewer, note=note)
+
+
+@router.get("/breaks/{break_id}/events", response_model=list[BreakEventResponse])
+async def break_events(break_id: uuid.UUID, session: AsyncSession = Depends(get_async_session)):
+    return list(
+        await session.scalars(
+            select(BreakEvent)
+            .where(BreakEvent.break_id == break_id)
+            .order_by(BreakEvent.created_at, BreakEvent.event_id)
+        )
+    )
+
+
+@router.get("/audit", response_model=list[BreakEventResponse])
+async def audit_log(
+    source: Source = "synthetic",
+    limit: int = Query(100, ge=1, le=500),
+    session: AsyncSession = Depends(get_async_session),
+):
+    """Most recent review events, including those for replaced uploads."""
+    return list(
+        await session.scalars(
+            select(BreakEvent)
+            .where(BreakEvent.source == source)
+            .order_by(BreakEvent.created_at.desc(), BreakEvent.event_id.desc())
+            .limit(limit)
+        )
     )
 
 

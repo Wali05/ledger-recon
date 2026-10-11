@@ -10,9 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.breaks import require_break
+from app.auth import require_reviewer
 from app.database import get_async_session
 
-router = APIRouter(tags=["explanations"])
+router = APIRouter(tags=["explanations"], dependencies=[Depends(require_reviewer)])
 logger = logging.getLogger(__name__)
 _counters = {}
 
