@@ -5,78 +5,66 @@ services:
       POSTGRES_DB: ledger_recon
       POSTGRES_USER: recon_user
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-recon_pass}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+    volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U recon_user -d ledger_recon"]
-      interval: 5s
+      interval: 3s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes: [redisdata:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
+      interval: 3s
       timeout: 5s
-      retries: 10
+      retries: 20
 
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend:/app
-    environment:
-      # ONE database url — the app derives the async (asyncpg) and sync
-      # (psycopg2) drivers from it. See backend/app/database.py.
+      args:
+        INSTALL_AI: ${INSTALL_AI:-false}
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
+    environment: &backend_env
       DATABASE_URL: postgresql://recon_user:${POSTGRES_PASSWORD:-recon_pass}@postgres:5432/ledger_recon
-      REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/0
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
 
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile
+      args:
+        INSTALL_AI: ${INSTALL_AI:-false}
     command: celery -A app.celery_app worker --loglevel=info --concurrency=2
-    volumes:
-      - ./backend:/app
     environment:
-      DATABASE_URL: postgresql://recon_user:${POSTGRES_PASSWORD:-recon_pass}@postgres:5432/ledger_recon
-      REDIS_URL: redis://redis:6379/0
-      CELERY_BROKER_URL: redis://redis:6379/0
-      CELERY_RESULT_BACKEND: redis://redis:6379/1
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      <<: *backend_env
+      AUTO_MIGRATE: "false"
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      backend: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping --destination celery@$$HOSTNAME --timeout 5"]
+      interval: 15s
+      timeout: 10s
+      start_period: 20s
+      retries: 10
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "5173:5173"
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+    build: ./frontend
+    ports: ["127.0.0.1:${UI_PORT:-5173}:5173"]
     environment:
-      VITE_API_BASE_URL: http://localhost:8000
+      API_PROXY_TARGET: http://backend:8000
     depends_on:
-      - backend
+      backend: {condition: service_healthy}
 
 volumes:
   pgdata:
+  redisdata:

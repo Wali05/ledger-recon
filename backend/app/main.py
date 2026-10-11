@@ -1,73 +1,79 @@
-"""
-FastAPI application entry point.
+"""Application startup, migration and local recovery of interrupted jobs."""
 
-Creates all DB tables on startup, mounts routers, and configures CORS
-to allow the React dev server (localhost:5173) to call this API.
-"""
-
+import logging
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text, update
+from starlette.concurrency import run_in_threadpool
 
-from app.database import async_engine, Base
-from app.api.reconcile import router as reconcile_router
 from app.api.breaks import router as breaks_router
+from app.api.explanations import router as explanations_router
+from app.api.reconcile import router as reconcile_router
+from app.celery_app import EAGER_MODE
+from app.database import AsyncSessionLocal, async_engine
+from app.engine.matcher import load_external_statement, load_internal_ledger
+from app.migrate import migrate
+from app.models import DatasetState, ReconciliationJob, utcnow
+from app.tasks import DATA_DIR
 
-# Import models so SQLAlchemy metadata is populated before create_all
-import app.models  # noqa: F401
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create DB tables on startup (idempotent — skips if they exist)."""
-    async with async_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+async def lifespan(app):
+    if os.getenv("AUTO_MIGRATE", "true").lower() == "true":
+        await run_in_threadpool(migrate)
+    internal = await run_in_threadpool(load_internal_ledger, DATA_DIR / "internal_ledger.csv")
+    external = await run_in_threadpool(load_external_statement, DATA_DIR / "bank_statement.csv")
+    async with AsyncSessionLocal() as session:
+        state = await session.get(DatasetState, "synthetic")
+        if state is None:
+            raise RuntimeError("Database schema is missing. Run python -m app.migrate first.")
+        state.ledger_rows, state.statement_rows = len(internal), len(external)
+        if EAGER_MODE:
+            # Local background work is not durable across process restarts.
+            # Local mode supports one API process; Redis workers are separate.
+            await session.execute(
+                update(ReconciliationJob)
+                .where(ReconciliationJob.status.in_(["pending", "running"]))
+                .values(
+                    status="failed",
+                    finished_at=utcnow(),
+                    error_message="Local API restarted before the job finished. Run it again.",
+                )
+            )
+        await session.commit()
     yield
+    await async_engine.dispose()
 
 
 app = FastAPI(
-    title="Ledger Reconciliation Engine",
-    description=(
-        "Detects discrepancies between an internal financial ledger and external "
-        "bank statements. Runs reconciliation jobs asynchronously via Celery/Redis."
-    ),
-    version="1.0.0",
+    title="Ledger Recon",
+    version="2.0.0",
+    description="Compare ledger and statement feeds, review discrepancies, and preserve resolutions across unchanged reruns.",
     lifespan=lifespan,
 )
-
-# CORS is restricted to an explicit allow-list of origins.
-#
-# NOTE: production traffic goes through the Vercel `/api/*` rewrite, which proxies
-# to this backend server-side — those requests are same-origin and never trigger
-# CORS. This allow-list therefore only matters for direct/browser calls (local dev,
-# or anything hitting the DigitalOcean host directly).
-#
-# Set ALLOWED_ORIGINS in the environment as a comma-separated list, e.g.
-#   ALLOWED_ORIGINS=https://your-app.vercel.app,http://localhost:5173
-# Falls back to the local dev origins if unset.
-#
-# allow_credentials is False: the frontend uses plain fetch with no cookies/auth
-# headers, so credentials aren't needed — and "*" + credentials is invalid per the
-# CORS spec anyway.
-_origins_env = os.getenv("ALLOWED_ORIGINS", "")
-allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()] or [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-
+origins = [value.strip() for value in os.getenv("ALLOWED_ORIGINS", "").split(",") if value.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=origins or ["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
-
 app.include_router(reconcile_router)
 app.include_router(breaks_router)
+app.include_router(explanations_router)
 
 
 @app.get("/health", tags=["health"])
-async def health_check():
-    return {"status": "ok", "service": "ledger-reconciliation-engine"}
+async def health():
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        raise HTTPException(503, "Database unavailable") from exc
+    return {"status": "ok", "service": "ledger-recon", "mode": "local" if EAGER_MODE else "worker"}

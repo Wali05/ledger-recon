@@ -1,16 +1,14 @@
-"""Pydantic v2 request/response schemas."""
+"""Typed HTTP contracts shared by validation and OpenAPI."""
 
-from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional, List
+from typing import Literal
 from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict
 
-
-# ─── Break Types ────────────────────────────────────────────────────────────
-
-BREAK_TYPES = [
+Source = Literal["synthetic", "uploaded"]
+BreakType = Literal[
     "AMOUNT_MISMATCH",
     "MISSING_INTERNAL",
     "MISSING_EXTERNAL",
@@ -19,9 +17,17 @@ BREAK_TYPES = [
     "FX_ROUNDING",
     "UNKNOWN",
 ]
+SortField = Literal[
+    "transaction_id",
+    "break_type",
+    "internal_amount",
+    "external_amount",
+    "delta_amount",
+    "detected_at",
+    "resolved",
+]
+SortDirection = Literal["asc", "desc"]
 
-
-# ─── Reconciliation Job ──────────────────────────────────────────────────────
 
 class ReconcileRunResponse(BaseModel):
     job_id: UUID
@@ -31,49 +37,58 @@ class ReconcileRunResponse(BaseModel):
 
 class JobStatusResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     job_id: UUID
+    source: Source
     status: str
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-    transactions_processed: Optional[int] = None
-    breaks_detected: Optional[int] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    error_message: str | None = None
+    transactions_processed: int | None = None
+    breaks_detected: int | None = None
+    breaks_inserted: int | None = None
 
-
-# ─── Breaks ─────────────────────────────────────────────────────────────────
 
 class BreakResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     break_id: UUID
     transaction_id: str
+    external_transaction_id: str | None = None
     break_type: str
-    internal_amount: Optional[Decimal] = None
-    external_amount: Optional[Decimal] = None
-    delta_amount: Optional[Decimal] = None
-    internal_timestamp: Optional[datetime] = None
-    external_timestamp: Optional[datetime] = None
-    description: Optional[str] = None
+    currency: str | None = None
+    evidence_side: str
+    occurrence: int
+    internal_amount: Decimal | None = None
+    external_amount: Decimal | None = None
+    delta_amount: Decimal | None = None
+    internal_timestamp: datetime | None = None
+    external_timestamp: datetime | None = None
+    description: str | None = None
     detected_at: datetime
     resolved: bool
-    resolved_at: Optional[datetime] = None
-    job_id: Optional[UUID] = None
-    source: str = "synthetic"
-    ai_explanation: Optional[str] = None
+    resolved_at: datetime | None = None
+    job_id: UUID | None = None
+    source: Source
+    ai_explanation: str | None = None
 
 
 class UploadResponse(BaseModel):
     message: str
     rows_inserted: int
-    rows_skipped: int
+    rows_skipped: int = 0
+
+
+class PairUploadResponse(BaseModel):
+    message: str
+    ledger_rows: int
+    statement_rows: int
+    replaced: bool
 
 
 class BreakListResponse(BaseModel):
     total: int
     page: int
     page_size: int
-    items: List[BreakResponse]
+    items: list[BreakResponse]
 
 
 class ResolveBreakResponse(BaseModel):
@@ -83,8 +98,6 @@ class ResolveBreakResponse(BaseModel):
     message: str
 
 
-# ─── Stats ───────────────────────────────────────────────────────────────────
-
 class BreakTypeStat(BaseModel):
     break_type: str
     count: int
@@ -93,7 +106,9 @@ class BreakTypeStat(BaseModel):
 
 class StatsResponse(BaseModel):
     total_transactions_in_ledger: int
+    total_transactions_in_statement: int
     total_breaks_detected: int
     total_breaks_resolved: int
     resolution_rate_pct: float
-    breaks_by_type: List[BreakTypeStat]
+    breaks_by_type: list[BreakTypeStat]
+    ai_enabled: bool

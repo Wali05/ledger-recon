@@ -1,152 +1,115 @@
-"""
-SQLAlchemy ORM models.
-
-Key design decision — idempotency via DB constraint:
-The reconciliation_breaks table has a UNIQUE constraint on (transaction_id, break_type).
-This means if the reconciliation job runs twice on identical data, the second INSERT
-will conflict and be silently ignored (ON CONFLICT DO NOTHING). This is enforced at
-the DATABASE level, not just in application code, so no application bug can bypass it.
-"""
+"""Persistence schema. Dataset locks serialize replacement and job admission."""
 
 import uuid
 from datetime import datetime, timezone
+
 from sqlalchemy import (
-    Column, String, Numeric, DateTime, Boolean, ForeignKey,
-    UniqueConstraint, Text, Index, CHAR, TypeDecorator,
+    Boolean,
+    Column,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
 )
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
 from app.database import Base
+from app.dbtypes import GUID, Money, UTCDateTime
 
 
-def _utcnow():
+def utcnow():
     return datetime.now(timezone.utc)
 
 
-class GUID(TypeDecorator):
-    """
-    Platform-independent UUID column.
-
-    Uses Postgres' native UUID type where available (efficient, indexable as a
-    real uuid), and falls back to CHAR(36) on SQLite and anything else. Without
-    this the models could only ever be created against Postgres, which is what
-    previously tied the whole project to a single deployment target.
-    """
-
-    impl = CHAR
-    cache_ok = True
-
-    def load_dialect_impl(self, dialect):
-        if dialect.name == "postgresql":
-            return dialect.type_descriptor(PG_UUID(as_uuid=True))
-        return dialect.type_descriptor(CHAR(36))
-
-    def process_bind_param(self, value, dialect):
-        if value is None or dialect.name == "postgresql":
-            return value
-        return str(value)
-
-    def process_result_value(self, value, dialect):
-        if value is None or isinstance(value, uuid.UUID):
-            return value
-        return uuid.UUID(value)
+class DatasetState(Base):
+    __tablename__ = "dataset_state"
+    source = Column(String(20), primary_key=True)
+    ledger_hash = Column(String(64), nullable=True)
+    statement_hash = Column(String(64), nullable=True)
+    ledger_rows = Column(Integer, nullable=False, default=0)
+    statement_rows = Column(Integer, nullable=False, default=0)
 
 
 class LedgerTransaction(Base):
-    """
-    Internal ledger — represents the bank/accounting system's record of a transaction.
-    This is the authoritative source from the company's perspective.
-    """
+    # Retained for upgrades of the original schema. Synthetic runs read the CSVs.
     __tablename__ = "ledger"
-
     transaction_id = Column(String, primary_key=True)
     account_id = Column(String, nullable=False)
-    amount = Column(Numeric(18, 4), nullable=False)
+    amount = Column(Money(), nullable=False)
     currency = Column(String(3), nullable=False, default="USD")
-    timestamp = Column(DateTime(timezone=True), nullable=False)
-    description = Column(Text, nullable=True)
+    timestamp = Column(UTCDateTime(), nullable=False)
+    description = Column(Text)
     status = Column(String(50), nullable=False, default="settled")
 
 
 class UploadedLedgerTransaction(Base):
-    """Uploaded version of the internal ledger."""
     __tablename__ = "uploaded_ledger"
-
-    transaction_id = Column(String, primary_key=True)
+    row_id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String, nullable=False, index=True)
     account_id = Column(String, nullable=False)
-    amount = Column(Numeric(18, 4), nullable=False)
-    currency = Column(String(3), nullable=False, default="USD")
-    timestamp = Column(DateTime(timezone=True), nullable=False)
-    description = Column(Text, nullable=True)
+    amount = Column(Money(), nullable=False)
+    currency = Column(String(3), nullable=False)
+    timestamp = Column(UTCDateTime(), nullable=False)
+    description = Column(Text)
     status = Column(String(50), nullable=False, default="settled")
 
 
 class UploadedStatementTransaction(Base):
-    """Uploaded version of the external bank statement."""
     __tablename__ = "uploaded_statement"
-
-    transaction_id = Column(String, primary_key=True)
-    amount = Column(Numeric(18, 4), nullable=False)
-    timestamp = Column(DateTime(timezone=True), nullable=False)
-    description = Column(Text, nullable=True)
+    row_id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String, nullable=False, index=True)
+    amount = Column(Money(), nullable=False)
+    timestamp = Column(UTCDateTime(), nullable=False)
+    description = Column(Text)
 
 
 class ReconciliationJob(Base):
-    """
-    Tracks the state of each reconciliation run.
-    job_id is the Celery task_id, which allows direct lookups via Celery's result backend.
-    """
     __tablename__ = "reconciliation_jobs"
-
     job_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
-    status = Column(String(20), nullable=False, default="pending")  # pending/running/complete/failed
-    source = Column(String(20), nullable=False, default="synthetic")  # synthetic/uploaded
-    started_at = Column(DateTime(timezone=True), nullable=True)
-    finished_at = Column(DateTime(timezone=True), nullable=True)
-    error_message = Column(Text, nullable=True)
-    transactions_processed = Column(Numeric, nullable=True)
-    breaks_detected = Column(Numeric, nullable=True)
+    status = Column(String(20), nullable=False, default="pending")
+    source = Column(String(20), nullable=False, default="synthetic")
+    started_at = Column(UTCDateTime())
+    finished_at = Column(UTCDateTime())
+    error_message = Column(Text)
+    transactions_processed = Column(Integer)
+    breaks_detected = Column(Integer)
+    breaks_inserted = Column(Integer)
+    __table_args__ = (
+        Index(
+            "uq_active_job_source",
+            "source",
+            unique=True,
+            sqlite_where=text("status IN ('pending', 'running')"),
+            postgresql_where=text("status IN ('pending', 'running')"),
+        ),
+    )
 
 
 class ReconciliationBreak(Base):
-    """
-    Each row represents a detected discrepancy between the internal ledger
-    and the external bank statement.
-
-    IDEMPOTENCY CONSTRAINT:
-    The UniqueConstraint on (transaction_id, break_type) is the core idempotency
-    mechanism. Combined with ON CONFLICT DO NOTHING on inserts, running the same
-    reconciliation job twice on unchanged data is safe — no duplicate breaks are
-    created, and existing resolved breaks are NOT overwritten.
-
-    This is deliberately a DB-level constraint (not just application logic) so that
-    even direct DB writes or parallel workers cannot violate it.
-    """
     __tablename__ = "reconciliation_breaks"
-
     break_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    break_key = Column(String(64), nullable=False)
     transaction_id = Column(String, nullable=False)
+    external_transaction_id = Column(String)
     break_type = Column(String(30), nullable=False)
-    internal_amount = Column(Numeric(18, 4), nullable=True)
-    external_amount = Column(Numeric(18, 4), nullable=True)
-    delta_amount = Column(Numeric(18, 4), nullable=True)
-    internal_timestamp = Column(DateTime(timezone=True), nullable=True)
-    external_timestamp = Column(DateTime(timezone=True), nullable=True)
-    description = Column(Text, nullable=True)
-    detected_at = Column(DateTime(timezone=True), nullable=False, default=_utcnow)
+    currency = Column(String(3))
+    evidence_side = Column(String(20), nullable=False, default="pair")
+    occurrence = Column(Integer, nullable=False, default=0)
+    internal_amount = Column(Money())
+    external_amount = Column(Money())
+    delta_amount = Column(Money(delta=True))
+    internal_timestamp = Column(UTCDateTime())
+    external_timestamp = Column(UTCDateTime())
+    description = Column(Text)
+    detected_at = Column(UTCDateTime(), nullable=False, default=utcnow)
     resolved = Column(Boolean, nullable=False, default=False)
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
-    job_id = Column(GUID(), ForeignKey("reconciliation_jobs.job_id"), nullable=True)
+    resolved_at = Column(UTCDateTime())
+    job_id = Column(GUID(), ForeignKey("reconciliation_jobs.job_id"))
     source = Column(String(20), nullable=False, default="synthetic")
-    ai_explanation = Column(Text, nullable=True)
-
-    # THE CRITICAL CONSTRAINT: enforces idempotency at the database level.
-    # A second reconciliation run on the same data will attempt to INSERT the same
-    # (transaction_id, break_type, source) tuples. These will conflict and be silently
-    # skipped via ON CONFLICT DO NOTHING — no duplicates, no overwriting of manual
-    # resolutions that a human may have set in between runs.
+    ai_explanation = Column(Text)
     __table_args__ = (
-        UniqueConstraint("transaction_id", "break_type", "source", name="uq_break_txn_type_source"),
-        Index("ix_breaks_break_type", "break_type"),
-        Index("ix_breaks_resolved", "resolved"),
-        Index("ix_breaks_source", "source"),
+        UniqueConstraint("source", "break_key", name="uq_break_source_key"),
+        Index("ix_breaks_source_resolved_type", "source", "resolved", "break_type"),
     )

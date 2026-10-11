@@ -1,0 +1,15 @@
+name: ledger-recon-tests
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ledger_recon_test
+      POSTGRES_USER: recon_test
+      POSTGRES_PASSWORD: recon_test
+    ports: ["127.0.0.1:${TEST_POSTGRES_PORT:-15432}:5432"]
+    tmpfs: ["/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recon_test -d ledger_recon_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
