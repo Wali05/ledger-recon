@@ -18,6 +18,7 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+.vercel/
 
 # System
 .DS_Store
@@ -33,5 +34,12 @@ ground_truth.csv
 *.db
 backend/ledger_recon.db
 
-# Generated test fixtures (recreate with scripts/generate_large_test.py)
+# Legacy generated test fixtures
 scripts/large_test_*.csv
+.pytest_cache/
+.ruff_cache/
+*.db-shm
+*.db-wal
+*.sqlite3
+test-results/
+playwright-report/
