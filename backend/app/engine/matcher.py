@@ -2,8 +2,8 @@
 
 Amounts must already use comparable units; no currency conversion takes place.
 FX_ROUNDING is a review suggestion, not proof of the cause. Fuzzy pairs are
-ranked by amount difference, UTC calendar-date difference, then external ID.
-The fallback can mis-pair similar payments and has quadratic worst-case cost.
+ranked by amount difference, UTC calendar-date difference, then external ID,
+using an amount-sorted index. The greedy fallback can mis-pair similar payments.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -296,8 +297,11 @@ def run_matching(
     # ── Phase 2: Fuzzy Fallback ────────────────────────────────────────────────
     # For rows not matched in Phase 1, attempt amount+date proximity matching.
     #
-    # Greedy fallback scans the remaining external pool for each internal row.
-    # It is quadratic in the worst case and can mis-pair similar payments.
+    # The remaining external rows are sorted by amount, so each internal row only
+    # inspects the slice inside ±AMOUNT_TOLERANCE (two binary searches) instead of
+    # scanning the whole pool. Candidate sets, and therefore results, are identical
+    # to a full scan; typical cost is O((n + m) log m). The greedy choice can still
+    # mis-pair similar payments, so every fuzzy pair is labelled for review.
 
     unmatched_internal = [
         r for r in internal_deduped if r.transaction_id not in exact_matched_internal_ids
@@ -307,14 +311,16 @@ def run_matching(
     ]
 
     fuzzy_matched_external_ids: set = set()
+    pool = sorted(unmatched_external, key=lambda row: (row.amount, row.transaction_id))
+    pool_amounts = [row.amount for row in pool]
 
     for int_row in sorted(unmatched_internal, key=lambda row: row.transaction_id):
+        low = bisect_left(pool_amounts, int_row.amount - AMOUNT_TOLERANCE)
+        high = bisect_right(pool_amounts, int_row.amount + AMOUNT_TOLERANCE)
         candidates = [
             row
-            for row in unmatched_external
-            if row.transaction_id not in fuzzy_matched_external_ids
-            and abs(int_row.amount - row.amount) <= AMOUNT_TOLERANCE
-            and _date_delta_days(int_row.timestamp, row.timestamp) <= DATE_TOLERANCE_DAYS
+            for row in pool[low:high]
+            if _date_delta_days(int_row.timestamp, row.timestamp) <= DATE_TOLERANCE_DAYS
             and int_row.amount * row.amount >= 0
         ]
         matched_ext = min(
@@ -329,6 +335,9 @@ def run_matching(
 
         if matched_ext is not None:
             fuzzy_matched_external_ids.add(matched_ext.transaction_id)
+            # Remove the claimed row so later windows never re-inspect it.
+            claimed = pool.index(matched_ext, low, high)
+            del pool[claimed], pool_amounts[claimed]
             # Fuzzy-matched pairs — check what kind of break they represent
             amount_delta = int_row.amount - matched_ext.amount
             date_diff = _date_delta_days(int_row.timestamp, matched_ext.timestamp)

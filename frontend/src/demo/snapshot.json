@@ -3,7 +3,7 @@
   "seed": 42,
   "description": "Precomputed synthetic results from the Python matcher; no live inference",
   "input_fingerprint": "0277e9658c67fe8fc3faf3762e7f07e9810f9d007821c9d1972506f8607ecafe",
-  "engine_fingerprint": "7b22715f5e129daabf4640f8c7037fa9a763d1b73642ab66c556f0ea545de46c",
+  "engine_fingerprint": "ee8b7b2e7410f7b6b09787a785fcf2ce375415fe99efd59cbef3815578b3e723",
   "ledger_rows": 5115,
   "statement_rows": 5135,
   "evaluation": {

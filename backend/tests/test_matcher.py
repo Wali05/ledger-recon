@@ -221,3 +221,77 @@ def test_fx_rule_applies_to_any_non_usd_currency(currency):
         [external("T1", "200.02")],
     )
     assert types_of(breaks) == [FX_ROUNDING]
+
+
+def _reference_fuzzy_pairs(internal_rows, external_rows):
+    """Brute-force version of the fallback: scan every remaining external row."""
+    from app.engine.matcher import AMOUNT_TOLERANCE, DATE_TOLERANCE_DAYS, _date_delta_days
+
+    used, pairs = set(), {}
+    for int_row in sorted(internal_rows, key=lambda row: row.transaction_id):
+        candidates = [
+            row
+            for row in external_rows
+            if row.transaction_id not in used
+            and abs(int_row.amount - row.amount) <= AMOUNT_TOLERANCE
+            and _date_delta_days(int_row.timestamp, row.timestamp) <= DATE_TOLERANCE_DAYS
+            and int_row.amount * row.amount >= 0
+        ]
+        if candidates:
+            best = min(
+                candidates,
+                key=lambda row: (
+                    abs(int_row.amount - row.amount),
+                    _date_delta_days(int_row.timestamp, row.timestamp),
+                    row.transaction_id,
+                ),
+            )
+            used.add(best.transaction_id)
+            pairs[int_row.transaction_id] = best.transaction_id
+    return pairs
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_indexed_fallback_matches_brute_force_scan(seed):
+    import random
+
+    rng = random.Random(seed)
+    # Dense, overlapping amounts and dates force many competing candidates.
+    ledger = [
+        internal(
+            f"I{i:04d}",
+            Decimal(rng.randint(-3000, 3000)) / 100,
+            ts=BASE + timedelta(days=rng.randint(0, 8)),
+        )
+        for i in range(300)
+    ]
+    statement = [
+        external(
+            f"E{i:04d}",
+            Decimal(rng.randint(-3000, 3000)) / 100,
+            ts=BASE + timedelta(days=rng.randint(0, 8)),
+        )
+        for i in range(300)
+    ]
+    expected = _reference_fuzzy_pairs(ledger, statement)
+    actual = {
+        record.transaction_id: record.external_transaction_id
+        for record in run_matching(ledger, statement)
+        if record.external_transaction_id and record.evidence_side == "pair"
+    }
+    assert actual == expected
+    assert expected  # the scenario really exercises fuzzy pairing
+
+
+def test_fallback_scales_to_upload_limit():
+    import time
+
+    # 10,000 rows per side (the upload limit), every ID mangled so all of them
+    # go through the fuzzy fallback. A full scan would make 10^8 comparisons.
+    ledger = [internal(f"L{i:05d}", Decimal(i) + Decimal("0.10")) for i in range(10_000)]
+    statement = [external(f"S{i:05d}", Decimal(i)) for i in range(10_000)]
+    started = time.perf_counter()
+    breaks = run_matching(ledger, statement)
+    assert time.perf_counter() - started < 5
+    assert len(breaks) == 10_000
+    assert {record.break_type for record in breaks} == {AMOUNT_MISMATCH}
