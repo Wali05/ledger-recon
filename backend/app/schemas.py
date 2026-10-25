@@ -15,8 +15,11 @@ BreakType = Literal[
     "DUPLICATE",
     "TIMING_LAG",
     "FX_ROUNDING",
+    "REFERENCE_MISMATCH",
+    "SPLIT_SETTLEMENT",
     "UNKNOWN",
 ]
+Confidence = Literal["high", "medium", "low"]
 SortField = Literal[
     "transaction_id",
     "break_type",
@@ -25,6 +28,7 @@ SortField = Literal[
     "delta_amount",
     "detected_at",
     "resolved",
+    "confidence",
 ]
 SortDirection = Literal["asc", "desc"]
 
@@ -46,6 +50,7 @@ class JobStatusResponse(BaseModel):
     transactions_processed: int | None = None
     breaks_detected: int | None = None
     breaks_inserted: int | None = None
+    breaks_retired: int | None = None
 
 
 class BreakResponse(BaseModel):
@@ -70,6 +75,8 @@ class BreakResponse(BaseModel):
     job_id: UUID | None = None
     source: Source
     ai_explanation: str | None = None
+    confidence: Confidence | None = None
+    related_ids: list[str] | None = None
 
 
 class UploadResponse(BaseModel):
@@ -94,6 +101,18 @@ class BreakListResponse(BaseModel):
 
 class ReviewRequest(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
+
+
+class BulkReviewRequest(BaseModel):
+    action: Literal["resolve", "reopen"]
+    break_ids: list[UUID] = Field(min_length=1, max_length=500)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class BulkReviewResponse(BaseModel):
+    changed: int
+    unchanged: int
+    message: str
 
 
 class ReviewResponse(BaseModel):
@@ -126,6 +145,12 @@ class BreakTypeStat(BaseModel):
     break_type: str
     count: int
     resolved_count: int
+    open_value: Decimal = Decimal("0")
+
+
+class ConfidenceStat(BaseModel):
+    confidence: str
+    open_count: int
 
 
 class StatsResponse(BaseModel):
@@ -135,4 +160,6 @@ class StatsResponse(BaseModel):
     total_breaks_resolved: int
     resolution_rate_pct: float
     breaks_by_type: list[BreakTypeStat]
+    open_value: Decimal = Decimal("0")
+    open_by_confidence: list[ConfidenceStat] = []
     ai_enabled: bool
