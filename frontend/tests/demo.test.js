@@ -38,7 +38,7 @@ test("demo resolves locally, preserves reruns and reloads, and resets only its o
 test("filters and pagination operate across the complete sample", async () => {
   const client = createDemoClient(snapshot);
   const all = await client.request("/breaks?page_size=200");
-  assert.equal(all.total, 130);
+  assert.equal(all.total, 167);
   const duplicates = await client.request(
     "/breaks?break_type=DUPLICATE&page_size=3&page=2",
   );

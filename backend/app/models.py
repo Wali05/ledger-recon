@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Column,
     ForeignKey,
@@ -76,6 +77,7 @@ class ReconciliationJob(Base):
     transactions_processed = Column(Integer)
     breaks_detected = Column(Integer)
     breaks_inserted = Column(Integer)
+    breaks_retired = Column(Integer)
     __table_args__ = (
         Index(
             "uq_active_job_source",
@@ -110,6 +112,8 @@ class ReconciliationBreak(Base):
     job_id = Column(GUID(), ForeignKey("reconciliation_jobs.job_id"))
     source = Column(String(20), nullable=False, default="synthetic")
     ai_explanation = Column(Text)
+    confidence = Column(String(10))
+    related_ids = Column(JSON)
     __table_args__ = (
         UniqueConstraint("source", "break_key", name="uq_break_source_key"),
         Index("ix_breaks_source_resolved_type", "source", "resolved", "break_type"),

@@ -35,6 +35,11 @@ NUM_FX_LARGE_DELTA = 5  # GT=FX_ROUNDING, delta > $0.05 → engine calls AMOUNT_
 NUM_FX_USD_NORMALISED = (
     5  # GT=FX_ROUNDING, but internal stored USD → engine calls AMOUNT_MISMATCH → FN
 )
+# Bank-side references: the statement does not echo the ledger's own ID.
+NUM_REFERENCE_MISMATCH = 20  # same amount and day, bank's own reference
+NUM_REFERENCE_LAG = 5  # bank's own reference AND a 1–2 day settlement lag
+NUM_BATCH_DEPOSITS = 8  # one bank deposit settles 2–4 ledger entries
+NUM_INSTALMENTS = 4  # one ledger entry is paid in 2–3 bank lines
 
 BASE_DATE = datetime(2024, 1, 1, tzinfo=timezone.utc)
 CURRENCIES = ["USD", "EUR", "GBP", "JPY", "CAD"]
@@ -545,6 +550,118 @@ for txn in fx_usd_norm_txns:
         }
     )
 
+# ── Bank-side references and split settlements ───────────────────
+# Real statements rarely carry the ledger's ID, and banks batch deposits.
+# These rows can only be reconciled by the fallback and split passes.
+
+
+def bank_reference() -> str:
+    return f"BNK-{random.getrandbits(40):010X}"
+
+
+reference_external_rows = []
+print(f"Planting {NUM_REFERENCE_MISMATCH + NUM_REFERENCE_LAG} rows with bank-side references...")
+for index in range(NUM_REFERENCE_MISMATCH + NUM_REFERENCE_LAG):
+    lagged = index >= NUM_REFERENCE_MISMATCH
+    txn_id = make_transaction_id()
+    account = random.choice(ACCOUNTS)
+    amount = random_amount()
+    ts = random_date(BASE_DATE, days=300)
+    internal_rows.append(
+        {
+            "transaction_id": txn_id,
+            "account_id": account,
+            "amount": amount,
+            "currency": "USD",
+            "timestamp": ts.isoformat(),
+            "description": description_for(amount, account),
+            "status": "settled",
+        }
+    )
+    reference_external_rows.append(
+        {
+            "transaction_id": bank_reference(),
+            "amount": amount,
+            "timestamp": (ts + timedelta(days=random.randint(1, 2) if lagged else 0)).isoformat(),
+            "description": f"Incoming payment {account}",
+        }
+    )
+    ground_truth.append(
+        {
+            "transaction_id": txn_id,
+            "break_type": "TIMING_LAG" if lagged else "REFERENCE_MISMATCH",
+            "is_actually_a_break": True,
+        }
+    )
+
+print(f"Planting {NUM_BATCH_DEPOSITS} batched bank deposits...")
+for _ in range(NUM_BATCH_DEPOSITS):
+    account = random.choice(ACCOUNTS)
+    day = random_date(BASE_DATE, days=300)
+    parts = [round(random.uniform(50.00, 5_000.00), 2) for _ in range(random.randint(2, 4))]
+    for part in parts:
+        internal_rows.append(
+            {
+                "transaction_id": make_transaction_id(),
+                "account_id": account,
+                "amount": part,
+                "currency": "USD",
+                "timestamp": (day + timedelta(minutes=random.randint(0, 600))).isoformat(),
+                "description": f"Card settlement {account}",
+                "status": "settled",
+            }
+        )
+    batch_id = f"BATCH-{random.getrandbits(40):010X}"
+    reference_external_rows.append(
+        {
+            "transaction_id": batch_id,
+            "amount": round(sum(parts), 2),
+            "timestamp": (day + timedelta(days=1)).isoformat(),
+            "description": f"Merchant batch deposit ({len(parts)} items)",
+        }
+    )
+    ground_truth.append(
+        {
+            "transaction_id": batch_id,
+            "break_type": "SPLIT_SETTLEMENT",
+            "is_actually_a_break": True,
+        }
+    )
+
+print(f"Planting {NUM_INSTALMENTS} invoices paid in instalments...")
+for _ in range(NUM_INSTALMENTS):
+    txn_id = make_transaction_id()
+    account = random.choice(ACCOUNTS)
+    day = random_date(BASE_DATE, days=300)
+    cents = [random.randint(10_000, 900_000) for _ in range(random.randint(2, 3))]
+    internal_rows.append(
+        {
+            "transaction_id": txn_id,
+            "account_id": account,
+            "amount": sum(cents) / 100,
+            "currency": "USD",
+            "timestamp": day.isoformat(),
+            "description": f"Invoice {account}",
+            "status": "settled",
+        }
+    )
+    for offset, part in enumerate(cents):
+        reference_external_rows.append(
+            {
+                "transaction_id": bank_reference(),
+                "amount": part / 100,
+                "timestamp": (day + timedelta(days=offset)).isoformat(),
+                "description": f"Part payment {account}",
+            }
+        )
+    ground_truth.append(
+        {
+            "transaction_id": txn_id,
+            "break_type": "SPLIT_SETTLEMENT",
+            "is_actually_a_break": True,
+        }
+    )
+
 # Shuffle internal rows so planted breaks aren't contiguous
 random.shuffle(internal_rows)
 
@@ -659,6 +776,8 @@ for txn in fx_usd_norm_txns:
         }
     )
 
+external_rows.extend(reference_external_rows)
+
 # Shuffle external rows
 random.shuffle(external_rows)
 
@@ -733,6 +852,10 @@ summary = {
         "FX_ROUNDING_large_delta_fn": NUM_FX_LARGE_DELTA,
         "FX_ROUNDING_usd_normalised_fn": NUM_FX_USD_NORMALISED,
         "FX_ROUNDING_total_in_gt": NUM_FX_ROUNDING + NUM_FX_LARGE_DELTA + NUM_FX_USD_NORMALISED,
+        "REFERENCE_MISMATCH": NUM_REFERENCE_MISMATCH,
+        "TIMING_LAG_with_bank_reference": NUM_REFERENCE_LAG,
+        "SPLIT_SETTLEMENT_batch_deposits": NUM_BATCH_DEPOSITS,
+        "SPLIT_SETTLEMENT_instalments": NUM_INSTALMENTS,
     },
     "total_planted": (
         NUM_AMOUNT_MISMATCH
@@ -744,6 +867,10 @@ summary = {
         + NUM_FX_ROUNDING
         + NUM_FX_LARGE_DELTA
         + NUM_FX_USD_NORMALISED
+        + NUM_REFERENCE_MISMATCH
+        + NUM_REFERENCE_LAG
+        + NUM_BATCH_DEPOSITS
+        + NUM_INSTALMENTS
     ),
     "internal_ledger_rows": len(internal_rows),
     "external_statement_rows": len(external_rows),

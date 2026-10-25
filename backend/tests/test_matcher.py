@@ -16,10 +16,16 @@ import pytest
 
 from app.engine.matcher import (
     AMOUNT_MISMATCH,
+    CONFIDENCE_LEVELS,
     DUPLICATE,
     FX_ROUNDING,
+    HIGH,
+    LOW,
+    MEDIUM,
     MISSING_EXTERNAL,
     MISSING_INTERNAL,
+    REFERENCE_MISMATCH,
+    SPLIT_SETTLEMENT,
     TIMING_LAG,
     UNKNOWN,
     ExternalRow,
@@ -223,8 +229,8 @@ def test_fx_rule_applies_to_any_non_usd_currency(currency):
     assert types_of(breaks) == [FX_ROUNDING]
 
 
-def _reference_fuzzy_pairs(internal_rows, external_rows):
-    """Brute-force version of the fallback: scan every remaining external row."""
+def _greedy_fuzzy_pairs(internal_rows, external_rows):
+    """The previous fallback: each ledger row, in ID order, takes its closest row."""
     from app.engine.matcher import AMOUNT_TOLERANCE, DATE_TOLERANCE_DAYS, _date_delta_days
 
     used, pairs = set(), {}
@@ -251,36 +257,203 @@ def _reference_fuzzy_pairs(internal_rows, external_rows):
     return pairs
 
 
-@pytest.mark.parametrize("seed", range(5))
-def test_indexed_fallback_matches_brute_force_scan(seed):
+def _fuzzy_pairs(records):
+    return {
+        record.transaction_id: record.external_transaction_id
+        for record in records
+        if record.external_transaction_id
+        and record.evidence_side == "pair"
+        and record.external_transaction_id != record.transaction_id
+    }
+
+
+def _random_rows(rng, count, prefix, factory):
+    return [
+        factory(
+            f"{prefix}{i:04d}",
+            Decimal(rng.randint(-3000, 3000)) / 100,
+            ts=BASE + timedelta(days=rng.randint(0, 8)),
+        )
+        for i in range(count)
+    ]
+
+
+def test_optimal_pairing_does_not_let_one_row_steal_anothers_only_partner():
+    """Greedy pairs A with its closest row X, leaving B with nothing in range.
+    The optimal matching pairs both: A with Y and B with X."""
+    ledger = [internal("A", "100.20"), internal("B", "100.00")]
+    bank = [external("X", "100.10"), external("Y", "100.60")]
+    assert _greedy_fuzzy_pairs(ledger, bank) == {"A": "X"}
+    breaks = run_matching(ledger, bank)
+    assert _fuzzy_pairs(breaks) == {"A": "Y", "B": "X"}
+    assert MISSING_EXTERNAL not in types_of(breaks)
+    assert MISSING_INTERNAL not in types_of(breaks)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_fallback_finds_the_cheapest_maximum_matching(seed):
+    """Brute force every assignment on small dense instances."""
+    import itertools
+    import random
+
+    from app.engine.matcher import _pair_cost
+
+    rng = random.Random(seed)
+    ledger = _random_rows(rng, rng.randint(1, 6), "I", internal)
+    bank = _random_rows(rng, rng.randint(1, 6), "E", external)
+    for row in ledger + bank:
+        row.amount = Decimal(rng.randint(0, 120)) / 100  # crowd the ±0.50 window
+    edge = {}
+    for a in ledger:
+        for b in bank:
+            if run_matching([a], [b]) and not {
+                MISSING_EXTERNAL,
+                MISSING_INTERNAL,
+            } & set(types_of(run_matching([a], [b]))):
+                edge[a.transaction_id, b.transaction_id] = _pair_cost(a, b)
+    best = (0, 0)
+    for size in range(1, min(len(ledger), len(bank)) + 1):
+        for chosen in itertools.combinations(ledger, size):
+            for partners in itertools.permutations(bank, size):
+                keys = [(a.transaction_id, b.transaction_id) for a, b in zip(chosen, partners)]
+                if all(key in edge for key in keys):
+                    best = max(best, (size, -sum(edge[key] for key in keys)))
+    actual = _fuzzy_pairs(run_matching(ledger, bank))
+    cost = sum(edge[pair] for pair in actual.items())
+    assert (len(actual), -cost) == best
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_optimal_fallback_pairs_at_least_as_many_rows_as_greedy(seed):
     import random
 
     rng = random.Random(seed)
     # Dense, overlapping amounts and dates force many competing candidates.
+    ledger = _random_rows(rng, 300, "I", internal)
+    statement = _random_rows(rng, 300, "E", external)
+    greedy = _greedy_fuzzy_pairs(ledger, statement)
+    optimal = _fuzzy_pairs(run_matching(ledger, statement))
+    assert greedy  # the scenario really exercises fuzzy pairing
+    assert len(optimal) >= len(greedy)
+    assert len(set(optimal.values())) == len(optimal)  # each bank row used once
+
+
+# ── Phase 3: split settlements ───────────────────────────────────────────────
+
+
+def test_bank_batch_deposit_is_grouped_with_the_ledger_entries_it_settles():
     ledger = [
-        internal(
-            f"I{i:04d}",
-            Decimal(rng.randint(-3000, 3000)) / 100,
-            ts=BASE + timedelta(days=rng.randint(0, 8)),
-        )
-        for i in range(300)
+        internal("INV-1", "120.10"),
+        internal("INV-2", "75.25"),
+        internal("INV-3", "301.65", ts=BASE + timedelta(days=1)),
+        internal("OTHER", "999.99"),
     ]
-    statement = [
-        external(
-            f"E{i:04d}",
-            Decimal(rng.randint(-3000, 3000)) / 100,
-            ts=BASE + timedelta(days=rng.randint(0, 8)),
-        )
-        for i in range(300)
+    bank = [external("DEP-9", "497.00", ts=BASE + timedelta(days=2))]
+    breaks = run_matching(ledger, bank)
+    split = next(row for row in breaks if row.break_type == SPLIT_SETTLEMENT)
+    assert split.transaction_id == "DEP-9"
+    assert split.related_ids == ["INV-1", "INV-2", "INV-3"]
+    assert split.internal_amount == split.external_amount == Decimal("497.00")
+    assert split.evidence_side == "many_internal"
+    assert split.confidence == MEDIUM
+    # Only the unrelated row is left over; the three members are accounted for.
+    assert [(row.transaction_id, row.break_type) for row in breaks if row is not split] == [
+        ("OTHER", MISSING_EXTERNAL)
     ]
-    expected = _reference_fuzzy_pairs(ledger, statement)
-    actual = {
-        record.transaction_id: record.external_transaction_id
-        for record in run_matching(ledger, statement)
-        if record.external_transaction_id and record.evidence_side == "pair"
-    }
-    assert actual == expected
-    assert expected  # the scenario really exercises fuzzy pairing
+
+
+def test_ledger_entry_paid_in_instalments_is_grouped():
+    breaks = run_matching(
+        [internal("INV-7", "1000.00", currency="EUR")],
+        [
+            external("PAY-A", "400.00"),
+            external("PAY-B", "600.00", ts=BASE + timedelta(days=3)),
+        ],
+    )
+    assert types_of(breaks) == [SPLIT_SETTLEMENT]
+    assert breaks[0].transaction_id == "INV-7"
+    assert breaks[0].related_ids == ["PAY-A", "PAY-B"]
+    assert breaks[0].evidence_side == "many_external"
+    assert breaks[0].currency == "EUR"
+
+
+def test_split_needs_an_exact_sum_inside_the_date_window():
+    near_miss = run_matching(
+        [internal("A", "100.00"), internal("B", "50.00")], [external("D", "150.01")]
+    )
+    assert SPLIT_SETTLEMENT not in types_of(near_miss)
+    too_late = run_matching(
+        [internal("A", "100.00"), internal("B", "50.00", ts=BASE + timedelta(days=5))],
+        [external("D", "150.00")],
+    )
+    assert SPLIT_SETTLEMENT not in types_of(too_late)
+
+
+def test_split_does_not_mix_ledger_currencies_or_signs():
+    mixed = run_matching(
+        [internal("A", "100.00", currency="EUR"), internal("B", "50.00", currency="GBP")],
+        [external("D", "150.00")],
+    )
+    assert SPLIT_SETTLEMENT not in types_of(mixed)
+    signs = run_matching(
+        [internal("A", "200.00"), internal("B", "-50.00")], [external("D", "150.00")]
+    )
+    assert SPLIT_SETTLEMENT not in types_of(signs)
+
+
+def test_split_prefers_fewest_parts_and_flags_ambiguity():
+    ledger = [internal(name, amount) for name, amount in [("A", "10"), ("B", "20"), ("C", "30")]]
+    fewest = run_matching(ledger + [internal("D", "40")], [external("X", "60")])
+    split = next(row for row in fewest if row.break_type == SPLIT_SETTLEMENT)
+    assert split.related_ids == ["B", "D"]  # two parts beat A + B + C
+    ambiguous = run_matching(
+        ledger + [internal("E", "40"), internal("F", "50")], [external("X", "60")]
+    )
+    split = next(row for row in ambiguous if row.break_type == SPLIT_SETTLEMENT)
+    assert split.confidence == LOW
+    assert "another combination" in split.description
+
+
+# ── Confidence and reference mismatches ──────────────────────────────────────
+
+
+def test_same_amount_same_day_with_a_different_reference_is_a_reference_mismatch():
+    breaks = run_matching([internal("INV-1", "250.00")], [external("BNK-77", "250.00")])
+    assert types_of(breaks) == [REFERENCE_MISMATCH]
+    assert breaks[0].external_transaction_id == "BNK-77"
+    assert breaks[0].confidence == HIGH
+
+
+def test_confidence_drops_when_several_rows_compete():
+    contested = run_matching(
+        [internal("A", "100.00"), internal("B", "100.10")],
+        [external("X", "100.05"), external("Y", "100.12")],
+    )
+    assert {row.confidence for row in contested} == {LOW}
+    assert all(row.confidence in CONFIDENCE_LEVELS for row in contested)
+
+
+def test_missing_row_with_a_competing_candidate_is_only_medium_confidence():
+    breaks = run_matching(
+        [internal("A", "100.00"), internal("B", "100.00")], [external("X", "100.00")]
+    )
+    missing = next(row for row in breaks if row.break_type == MISSING_EXTERNAL)
+    assert missing.confidence == MEDIUM
+    lonely = run_matching([internal("A", "100.00")], [])[0]
+    assert lonely.confidence == HIGH
+
+
+def test_duplicate_with_a_different_amount_is_flagged_for_a_closer_look():
+    breaks = run_matching(
+        [internal("T1", "100.00"), internal("T1", "100.00"), internal("T1", "90.00")],
+        [external("T1", "100.00")],
+    )
+    assert [row.confidence for row in breaks if row.break_type == DUPLICATE] == [HIGH, MEDIUM]
+
+
+def test_fx_suggestions_are_never_high_confidence():
+    breaks = run_matching([internal("T1", "100.00", currency="EUR")], [external("T1", "100.03")])
+    assert breaks[0].confidence == MEDIUM
 
 
 def test_fallback_scales_to_upload_limit():
@@ -295,3 +468,16 @@ def test_fallback_scales_to_upload_limit():
     assert time.perf_counter() - started < 5
     assert len(breaks) == 10_000
     assert {record.break_type for record in breaks} == {AMOUNT_MISMATCH}
+
+
+def test_split_search_stays_fast_on_unrelated_files():
+    import time
+
+    # Nothing pairs, every row shares one date, and every bank amount is larger
+    # than every ledger amount: the worst case for the split search.
+    ledger = [internal(f"L{i:05d}", Decimal(i % 997) + Decimal("0.01")) for i in range(10_000)]
+    statement = [external(f"S{i:05d}", Decimal(5_000 + i) + Decimal("0.37")) for i in range(10_000)]
+    started = time.perf_counter()
+    breaks = run_matching(ledger, statement)
+    assert time.perf_counter() - started < 10
+    assert len(breaks) == 20_000

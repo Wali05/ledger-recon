@@ -5,7 +5,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
@@ -38,7 +38,69 @@ def _result(job):
         "transactions_processed": job.transactions_processed,
         "breaks_detected": job.breaks_detected,
         "breaks_inserted": job.breaks_inserted,
+        "breaks_retired": job.breaks_retired,
     }
+
+
+# Evidence the engine recomputes on every run. Review state (resolution, who and
+# when), the break ID, first detection time and cached explanations are kept.
+EVIDENCE_FIELDS = (
+    "external_transaction_id",
+    "currency",
+    "internal_amount",
+    "external_amount",
+    "delta_amount",
+    "internal_timestamp",
+    "external_timestamp",
+    "description",
+    "confidence",
+    "related_ids",
+)
+
+
+def _publish(session, source, job_id, breaks):
+    """Upsert this run's breaks and retire the ones it no longer produces.
+
+    A break's stable key decides whether it is new. Existing breaks keep their
+    review state but take the latest evidence, so a rule change never leaves a
+    stale explanation behind. Breaks the current rules no longer report are
+    deleted; their review events stay in the append-only history.
+    """
+    existing = dict(
+        session.execute(
+            select(ReconciliationBreak.break_key, ReconciliationBreak.break_id).where(
+                ReconciliationBreak.source == source
+            )
+        ).all()
+    )
+    insert_fn = sqlite_insert if session.bind.dialect.name == "sqlite" else pg_insert
+    current = set()
+    for record in breaks:
+        current.add(record.identity)
+        values = asdict(record)
+        values.update(
+            break_key=record.identity,
+            break_id=uuid.uuid4(),
+            source=source,
+            job_id=job_id,
+            detected_at=utcnow(),
+            resolved=False,
+        )
+        statement = insert_fn(ReconciliationBreak).values(**values)
+        session.execute(
+            statement.on_conflict_do_update(
+                index_elements=["source", "break_key"],
+                set_={field: getattr(statement.excluded, field) for field in EVIDENCE_FIELDS},
+            )
+        )
+    stale = [break_id for key, break_id in existing.items() if key not in current]
+    for start in range(0, len(stale), 500):
+        session.execute(
+            delete(ReconciliationBreak).where(
+                ReconciliationBreak.break_id.in_(stale[start : start + 500])
+            )
+        )
+    return len(current - existing.keys()), len(stale)
 
 
 @celery_app.task(bind=True, name="app.tasks.reconciliation_task")
@@ -107,38 +169,21 @@ def reconciliation_task(self, job_id: str, source: str = "synthetic"):
                 raise ValueError("Unknown dataset")
 
             breaks = run_matching(internal, external)
-            insert_fn = sqlite_insert if session.bind.dialect.name == "sqlite" else pg_insert
-            inserted = 0
-            for record in breaks:
-                values = asdict(record)
-                values.update(
-                    break_key=record.identity,
-                    break_id=uuid.uuid4(),
-                    source=source,
-                    job_id=job_uuid,
-                    detected_at=utcnow(),
-                    resolved=False,
-                )
-                statement = (
-                    insert_fn(ReconciliationBreak)
-                    .values(**values)
-                    .on_conflict_do_nothing(
-                        index_elements=["source", "break_key"],
-                    )
-                )
-                inserted += max(session.execute(statement).rowcount, 0)
+            inserted, retired = _publish(session, source, job_uuid, breaks)
             state = session.get(DatasetState, source)
             state.ledger_rows, state.statement_rows = len(internal), len(external)
             job.status, job.finished_at = "complete", utcnow()
             job.transactions_processed = len(internal)
             job.breaks_detected, job.breaks_inserted = len(breaks), inserted
+            job.breaks_retired = retired
             session.commit()
             logger.info(
-                "Reconciliation completed: source=%s rows=%s detected=%s inserted=%s",
+                "Reconciliation completed: source=%s rows=%s detected=%s inserted=%s retired=%s",
                 source,
                 len(internal),
                 len(breaks),
                 inserted,
+                retired,
             )
             return _result(job)
         except Exception:

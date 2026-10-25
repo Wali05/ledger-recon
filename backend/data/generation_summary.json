@@ -12,11 +12,15 @@
     "FX_ROUNDING_detectable": 10,
     "FX_ROUNDING_large_delta_fn": 5,
     "FX_ROUNDING_usd_normalised_fn": 5,
-    "FX_ROUNDING_total_in_gt": 20
+    "FX_ROUNDING_total_in_gt": 20,
+    "REFERENCE_MISMATCH": 20,
+    "TIMING_LAG_with_bank_reference": 5,
+    "SPLIT_SETTLEMENT_batch_deposits": 8,
+    "SPLIT_SETTLEMENT_instalments": 4
   },
-  "total_planted": 130,
-  "internal_ledger_rows": 5115,
-  "external_statement_rows": 5135,
-  "ground_truth_rows": 5130,
+  "total_planted": 167,
+  "internal_ledger_rows": 5166,
+  "external_statement_rows": 5180,
+  "ground_truth_rows": 5167,
   "note": "FX_FP_CANDIDATES are GT=AMOUNT_MISMATCH but engine predicts FX_ROUNDING (FP). FX_LARGE_DELTA and FX_USD_NORMALISED are GT=FX_ROUNDING but engine predicts AMOUNT_MISMATCH (FN)."
 }
