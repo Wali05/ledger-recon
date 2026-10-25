@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 const target = process.env.API_PROXY_TARGET || "http://localhost:8000";
 export default defineConfig({
+  // GitHub Pages serves the demo from /ledger-recon/; everything else from /.
+  base: process.env.VITE_BASE || "/",
   plugins: [react()],
   server: {
     host: "127.0.0.1",
