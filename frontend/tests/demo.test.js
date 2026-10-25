@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createDemoClient } from "../src/demo/client.js";
-import { formatAmount } from "../src/format.js";
+import { formatAmount, formatCompact } from "../src/format.js";
 
 const snapshot = JSON.parse(
   readFileSync(new URL("../src/demo/snapshot.json", import.meta.url)),
@@ -138,4 +138,89 @@ test("demo keeps a review history with notes and supports reopening", async () =
   );
   assert.equal((await reloaded.request(url)).resolved, false);
   assert.equal((await reloaded.request("/session")).reviewer, "demo visitor");
+});
+
+test("demo search, confidence filter and triage order match the API", async () => {
+  const client = createDemoClient(snapshot);
+  const split = snapshot.items.find(
+    (item) => item.break_type === "SPLIT_SETTLEMENT",
+  );
+  const member = split.related_rows[0].transaction_id.toLowerCase();
+  const found = await client.request(`/breaks?q=${member}`);
+  assert.deepEqual(
+    found.items.map((item) => item.break_id),
+    [split.break_id],
+  );
+  const medium = await client.request(
+    "/breaks?confidence=medium&page_size=200",
+  );
+  assert.ok(medium.total > 0);
+  assert.ok(medium.items.every((item) => item.confidence === "medium"));
+  const ordered = await client.request(
+    "/breaks?sort_by=confidence&sort_dir=asc&page_size=200",
+  );
+  const rank = { low: 0, medium: 1, high: 2 };
+  const ranks = ordered.items.map((item) => rank[item.confidence]);
+  assert.deepEqual(
+    ranks,
+    [...ranks].sort((a, b) => a - b),
+  );
+});
+
+test("demo bulk review is conditional and logs every change", async () => {
+  const storage = memory(),
+    client = createDemoClient(snapshot, storage);
+  const ids = snapshot.items.slice(0, 3).map((item) => item.break_id);
+  await client.request(`/breaks/${ids[0]}/resolve`, { method: "POST" });
+  const result = await client.request("/breaks/bulk-review", {
+    method: "POST",
+    body: JSON.stringify({ action: "resolve", break_ids: ids, note: "Batch" }),
+  });
+  assert.deepEqual([result.changed, result.unchanged], [2, 1]);
+  assert.equal(result.message, "2 breaks resolved");
+  const reloaded = createDemoClient(snapshot, storage);
+  assert.equal((await reloaded.request("/stats")).total_breaks_resolved, 3);
+  const events = await reloaded.request(`/breaks/${ids[1]}/events`);
+  assert.deepEqual(
+    events.map((event) => event.note),
+    ["Batch"],
+  );
+  await assert.rejects(
+    client.request("/breaks/bulk-review", {
+      method: "POST",
+      body: JSON.stringify({ action: "resolve", break_ids: [] }),
+    }),
+    /at least one/,
+  );
+});
+
+test("demo statistics report exposure, confidence and auto-tied rows exactly", async () => {
+  const client = createDemoClient(snapshot);
+  const stats = await client.request("/stats");
+  const types = Object.fromEntries(
+    stats.breaks_by_type.map((row) => [row.break_type, row.open_value]),
+  );
+  // Amount breaks expose the difference; FX cents sum to well under a dollar.
+  assert.match(types.FX_ROUNDING, /^0\.\d{4}$/);
+  assert.equal(
+    stats.open_by_confidence.reduce((sum, row) => sum + row.open_count, 0),
+    snapshot.items.length,
+  );
+  const batchMembers = snapshot.items
+    .filter((item) => item.evidence_side === "many_internal")
+    .reduce((sum, item) => sum + item.related_rows.length, 0);
+  const bankOnly = snapshot.items.filter(
+    (item) => item.evidence_side === "external",
+  ).length;
+  assert.equal(
+    stats.ledger_rows_in_breaks,
+    snapshot.items.length -
+      bankOnly -
+      snapshot.items.filter((item) => item.evidence_side === "many_internal")
+        .length +
+      batchMembers,
+  );
+  assert.equal(formatCompact("2264512.3456"), "2.26M");
+  assert.equal(formatCompact("999.995"), "999.995");
+  assert.equal(formatCompact("-1500"), "-1.50K");
 });

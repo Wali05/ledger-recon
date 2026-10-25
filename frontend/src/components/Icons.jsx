@@ -163,3 +163,63 @@ export const KeyIcon = (props) => (
     <path d="m10.5 13 8-8M15.5 8l2.5 2.5M13.5 10l1.5 1.5" />
   </Icon>
 );
+
+export const SearchIcon = (props) => (
+  <Icon {...props}>
+    <circle cx="10.5" cy="10.5" r="5.5" />
+    <path d="m15 15 4.5 4.5" />
+  </Icon>
+);
+
+/* Light theme: a sun with short rays. */
+export const SunIcon = (props) => (
+  <Icon {...props}>
+    <circle cx="12" cy="12" r="3.8" />
+    <path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4" />
+  </Icon>
+);
+
+/* Dark theme: a crescent. */
+export const MoonIcon = (props) => (
+  <Icon {...props}>
+    <path d="M19 14.5A7.5 7.5 0 0 1 9.5 5a7.5 7.5 0 1 0 9.5 9.5z" />
+  </Icon>
+);
+
+/* Keyboard shortcuts: a keyboard outline with keys. */
+export const KeyboardIcon = (props) => (
+  <Icon {...props}>
+    <rect x="3" y="6.5" width="18" height="11" rx="2" />
+    <path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M8 14h8" />
+  </Icon>
+);
+
+/* Split settlement: one line fanning out into three. */
+export const SplitIcon = (props) => (
+  <Icon {...props}>
+    <path d="M4 12h5M9 12c3 0 3-5.5 6-5.5h5M9 12h11M9 12c3 0 3 5.5 6 5.5h5" />
+  </Icon>
+);
+
+/* Paired rows: two linked rings. */
+export const LinkIcon = (props) => (
+  <Icon {...props}>
+    <path d="M10 14a4 4 0 0 0 5.7 0l2.8-2.8a4 4 0 0 0-5.7-5.7l-1 1" />
+    <path d="M14 10a4 4 0 0 0-5.7 0l-2.8 2.8a4 4 0 0 0 5.7 5.7l1-1" />
+  </Icon>
+);
+
+/* Triage: a funnel. */
+export const FunnelIcon = (props) => (
+  <Icon {...props}>
+    <path d="M4 5.5h16l-6 7v5.5l-4 1.5v-7z" />
+  </Icon>
+);
+
+/* Engine pipeline: stacked passes. */
+export const LayersIcon = (props) => (
+  <Icon {...props}>
+    <path d="m12 4 8.5 4.5L12 13 3.5 8.5z" />
+    <path d="m3.5 12.5 8.5 4.5 8.5-4.5M3.5 16.5 12 21l8.5-4.5" />
+  </Icon>
+);

@@ -65,19 +65,28 @@ try {
   });
   await page.goto(url);
   const rows = page.locator("tbody tr");
+  const total = snapshot.items.length;
+  const openCount = () => page.locator(".stat-value").nth(1).innerText();
   await rows.first().waitFor();
   assert.equal(await rows.count(), 25);
-  assert.equal(await page.locator(".reconcile-card").count(), 1);
+  assert.equal(await page.locator(".run-panel").count(), 1);
   assert.equal(await page.locator(".stat-card").count(), 4);
-  assert.equal(
+  assert.equal(await openCount(), String(total));
+  assert.match(
     await page.locator(".stat-value").nth(0).innerText(),
-    snapshot.ledger_rows.toLocaleString("en-GB"),
+    /^\d+\.\d%$/,
   );
-  assert.equal(
-    await page.locator(".stat-value").nth(1).innerText(),
-    String(snapshot.items.length),
+  // The queue opens least certain first.
+  const order = { low: 0, medium: 1, high: 2 };
+  const firstLevel = Math.min(
+    ...snapshot.items.map((item) => order[item.confidence]),
   );
-  await page.locator(".breakdown-list").waitFor();
+  assert.ok(
+    (await rows.first().locator(".confidence").innerText())
+      .toLowerCase()
+      .includes(Object.keys(order)[firstLevel]),
+  );
+  await page.locator(".mix-list").waitFor();
   await page.screenshot({
     path: resolve(screenshots, "dashboard.png"),
     fullPage: false,
@@ -87,29 +96,59 @@ try {
   const firstTransaction = await rows.first().locator(".txn-id").innerText();
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await page.waitForFunction(() =>
-    document.querySelector(".pagination-info")?.textContent.includes("Page 2"),
+    document.querySelector(".pagination-info")?.textContent.includes("page 2"),
   );
   assert.notEqual(
     await rows.first().locator(".txn-id").innerText(),
     firstTransaction,
   );
+
+  // Type filter from the select, then from the break mix panel.
   await page
     .getByLabel("Break type", { exact: true })
     .selectOption("DUPLICATE");
   await page.waitForFunction(() =>
-    document.querySelector(".pagination-info")?.textContent.includes("Page 1"),
+    document.querySelector(".pagination-info")?.textContent.includes("page 1"),
   );
   await rows.first().waitFor();
   assert.ok(
-    (await rows.locator("td:nth-child(2)").allTextContents()).every((text) =>
+    (await rows.locator("td:nth-child(3)").allTextContents()).every((text) =>
       text.includes("Duplicate"),
     ),
   );
-  await page.getByLabel("Break type", { exact: true }).selectOption("ALL");
+  const splits = snapshot.items.filter(
+    (item) => item.break_type === "SPLIT_SETTLEMENT",
+  );
+  await page.locator(".mix-row", { hasText: "Split settlement" }).click();
+  await page.waitForFunction(
+    (count) => document.querySelectorAll("tbody tr").length === count,
+    splits.length,
+  );
+  await page.locator(".mix-row", { hasText: "Split settlement" }).click();
+  await page.waitForFunction(
+    () => document.getElementById("break-type")?.value === "ALL",
+  );
+
+  // Search matches group members, not just the row's own ID.
+  const member = splits[0].related_rows[0].transaction_id;
+  await page.keyboard.press("/");
+  await page.keyboard.type(member);
+  await page.waitForFunction(
+    (id) =>
+      document.querySelectorAll("tbody tr").length === 1 &&
+      document.querySelector("tbody .txn-id")?.textContent === id,
+    splits[0].transaction_id,
+  );
+  await page.getByLabel("Search transactions").fill("");
+  await page.waitForFunction(
+    () => document.querySelectorAll("tbody tr").length === 25,
+  );
+
   await page.getByRole("button", { name: /^Transaction/ }).click();
   await page.waitForFunction(
     () =>
-      document.querySelector("th")?.getAttribute("aria-sort") === "ascending",
+      document.querySelectorAll("th")[1]?.getAttribute("aria-sort") ===
+      "ascending",
   );
   const firstSortedId = snapshot.items
     .map((item) => item.transaction_id)
@@ -128,13 +167,9 @@ try {
   await dialog
     .getByRole("button", { name: "Mark resolved", exact: true })
     .waitFor();
-  assert.match(await dialog.innerText(), /Rule evidence/i);
+  assert.match(await dialog.innerText(), /Why it was flagged/i);
   const box = await dialog.boundingBox();
-  assert.ok(box.width <= 660 && box.width > 400);
-  await page.screenshot({
-    path: resolve(screenshots, "break-detail.png"),
-    animations: "disabled",
-  });
+  assert.ok(box.width <= 620 && box.width > 400);
   await dialog
     .getByLabel("Note for the record (optional)")
     .fill("Matched to bank fee");
@@ -142,7 +177,9 @@ try {
     .getByRole("button", { name: "Mark resolved", exact: true })
     .click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".stat-value")[2]?.textContent === "1",
+    (expected) =>
+      document.querySelectorAll(".stat-value")[1]?.textContent === expected,
+    String(total - 1),
   );
   await dialog.getByRole("button", { name: "Reopen", exact: true }).waitFor();
   const history = await dialog.locator(".history-list").innerText();
@@ -150,6 +187,35 @@ try {
   assert.match(history, /Matched to bank fee/);
   await page.keyboard.press("Escape");
   assert.equal(await dialog.count(), 0);
+
+  // Keyboard review: j moves, Enter opens the evidence for the active row.
+  await page.locator("h1").click();
+  await page.keyboard.press("j");
+  await page.keyboard.press("j");
+  const active = await page.locator("tbody tr.active .txn-id").innerText();
+  await page.keyboard.press("Enter");
+  await dialog.getByText(active, { exact: true }).first().waitFor();
+  await page.locator(".split, .members, .compare").first().waitFor();
+  await page.screenshot({
+    path: resolve(screenshots, "break-detail.png"),
+    animations: "disabled",
+  });
+  await page.keyboard.press("Escape");
+
+  // Bulk review: two selected rows resolved with one note.
+  await page.locator("tbody tr").nth(0).getByRole("checkbox").check();
+  await page.locator("tbody tr").nth(1).getByRole("checkbox").check();
+  await page.getByLabel("Note for the selected breaks").fill("Bulk check");
+  await page
+    .getByRole("button", { name: "Resolve selected", exact: true })
+    .click();
+  await page.waitForFunction(
+    (expected) =>
+      document.querySelectorAll(".stat-value")[1]?.textContent === expected,
+    String(total - 3),
+  );
+  assert.equal(await page.locator(".bulk-bar").count(), 0);
+
   await page
     .getByRole("button", { name: "Replay sample results", exact: true })
     .click();
@@ -158,17 +224,38 @@ try {
   );
   await page.reload();
   await rows.first().waitFor();
-  assert.equal(await page.locator(".stat-value").nth(2).innerText(), "1");
-  await page.getByLabel("Resolution status").selectOption("true");
+  assert.equal(await openCount(), String(total - 3));
+  await page.getByRole("button", { name: "Resolved", exact: true }).click();
   await page.waitForFunction(
-    () => document.querySelectorAll("tbody tr").length === 1,
+    () => document.querySelectorAll("tbody tr").length === 3,
   );
-  assert.equal(await rows.first().locator(".txn-id").innerText(), transaction);
+  assert.ok(
+    (await rows.locator(".txn-id").allTextContents()).includes(transaction),
+  );
   const downloadEvent = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export CSV", exact: true }).click();
   const download = await downloadEvent;
   const csv = await readFile(await download.path(), "utf8");
   assert.ok(csv.includes(transaction) && csv.includes("resolved_at"));
+  assert.equal(csv.trim().split("\r\n").length, 4);
+
+  // Theme switch persists across reloads.
+  await page.getByRole("button", { name: "Switch to dark theme" }).click();
+  assert.equal(
+    await page.evaluate(() => document.documentElement.dataset.theme),
+    "dark",
+  );
+  await page.reload();
+  await rows.first().waitFor();
+  assert.equal(
+    await page.evaluate(() => document.documentElement.dataset.theme),
+    "dark",
+  );
+  await page.keyboard.press("?");
+  await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Switch to light theme" }).click();
+
   await page
     .getByRole("button", { name: "Your CSV files", exact: true })
     .click();
@@ -181,9 +268,10 @@ try {
     .click();
   await page.getByRole("button", { name: "Reset demo", exact: true }).click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".stat-value")[2]?.textContent === "0",
+    (expected) =>
+      document.querySelectorAll(".stat-value")[1]?.textContent === expected,
+    String(total),
   );
-  assert.equal(await page.getByLabel("Resolution status").inputValue(), "");
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
@@ -206,6 +294,9 @@ try {
   await dialog
     .getByRole("button", { name: "Mark resolved", exact: true })
     .waitFor();
+  await dialog.evaluate((element) =>
+    Promise.all(element.getAnimations().map((animation) => animation.finished)),
+  );
   const mobileBox = await dialog.boundingBox();
   assert.ok(mobileBox.x >= 0 && mobileBox.x + mobileBox.width <= 390);
   await page.keyboard.press("Escape");
@@ -216,7 +307,7 @@ try {
     "The static demo must not require a backend",
   );
   console.log(
-    "Browser checks passed: desktop/mobile, filtering, pagination, sorting, evidence, resolve with note and history, replay, reload, reset, CSV, keyboard, and no API dependency.",
+    "Browser checks passed: desktop/mobile, triage order, filters, break mix, search, pagination, sorting, evidence, resolve with note and history, keyboard review, bulk resolve, replay, reload, theme, reset, CSV and no API dependency.",
   );
 } finally {
   await browser?.close();

@@ -62,8 +62,10 @@ try {
     .getByRole("button", { name: "Upload both files", exact: true })
     .click();
   assert.equal((await uploaded).status(), 200);
-  await page.waitForFunction(
-    () => document.querySelectorAll(".stat-value")[0]?.textContent === "3",
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".page-sub")
+      ?.textContent.startsWith("3 ledger rows"),
   );
   async function run() {
     const accepted = page.waitForResponse(
@@ -117,7 +119,7 @@ try {
     new RegExp(`resolved by ${process.env.API_REVIEWER || "local"}`, "i"),
   );
   await page.waitForFunction(
-    () => document.querySelectorAll(".stat-value")[2]?.textContent === "1",
+    () => document.querySelectorAll(".stat-value")[1]?.textContent === "2",
   );
   await page.keyboard.press("Escape");
   const secondJob = await run();
@@ -127,9 +129,9 @@ try {
     .getByRole("button", { name: "Your CSV files", exact: true })
     .click();
   await page.waitForFunction(
-    () => document.querySelectorAll(".stat-value")[2]?.textContent === "1",
+    () => document.querySelectorAll(".stat-value")[1]?.textContent === "2",
   );
-  await page.getByLabel("Resolution status").selectOption("true");
+  await page.getByRole("button", { name: "Resolved", exact: true }).click();
   await page.waitForFunction(
     () => document.querySelectorAll("tbody tr").length === 1,
   );

@@ -55,7 +55,7 @@ async def lifespan(app):
 
 app = FastAPI(
     title="Ledger Recon",
-    version="2.0.0",
+    version="3.0.0",
     description="Compare ledger and statement feeds, review discrepancies, and preserve resolutions across unchanged reruns.",
     lifespan=lifespan,
 )

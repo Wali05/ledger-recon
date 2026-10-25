@@ -9,6 +9,17 @@
       content="Compare an internal ledger with a bank statement, see the evidence behind every break, and record who resolved it."
     />
     <meta name="theme-color" content="#17263a" />
+    <script>
+      // Apply the saved or system theme before first paint.
+      try {
+        var theme = localStorage.getItem("ledger-recon.theme");
+        if (theme !== "light" && theme !== "dark")
+          theme = matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+        document.documentElement.dataset.theme = theme;
+      } catch (error) {}
+    </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>
   <body>

@@ -138,14 +138,14 @@ export default function ReconcileControl({
     (stats?.total_transactions_in_ledger > 0 &&
       stats?.total_transactions_in_statement > 0);
   return (
-    <section className="reconcile-card" aria-labelledby="engine-title">
-      <div className="reconcile-info">
+    <section className="panel run-panel" aria-labelledby="engine-title">
+      <div className="run-info">
         <h2 id="engine-title">
           {source === "synthetic" ? "Sample run" : "Your files"}
         </h2>
         <p>
           {source === "synthetic"
-            ? "5,000 clean payments with planted discrepancies. FX labels are suggestions for a reviewer, not conclusions."
+            ? "A year of seeded payments with planted problems: bank-side references, batched deposits, instalments, fees, lags, duplicates and deliberately ambiguous FX cents."
             : "UTF-8 CSV files, up to 10 MiB and 10,000 rows each. Both are checked line by line before anything is replaced."}
           {!DEMO_MODE &&
             " Rerunning unchanged data keeps every review decision."}
@@ -214,7 +214,7 @@ export default function ReconcileControl({
                 <span>
                   {STATUS_TEXT[job.status] || job.status}
                   {job.status === "complete" && job.breaks_detected != null
-                    ? `, ${job.breaks_detected} breaks`
+                    ? `, ${job.breaks_detected} breaks${job.breaks_retired ? `, ${job.breaks_retired} retired` : ""}`
                     : ""}
                 </span>
               </>

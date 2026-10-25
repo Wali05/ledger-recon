@@ -80,6 +80,12 @@ const review = (id, action, note) =>
   });
 export const resolveBreak = (id, note) => review(id, "resolve", note);
 export const reopenBreak = (id, note) => review(id, "reopen", note);
+export const bulkReview = (action, breakIds, note) =>
+  request("/breaks/bulk-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, break_ids: breakIds, note: note || null }),
+  });
 export const getBreakEvents = (id, signal) =>
   request(`/breaks/${id}/events`, { signal });
 export const getSession = (signal) => request("/session", { signal });
