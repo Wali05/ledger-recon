@@ -53,6 +53,14 @@ class JobStatusResponse(BaseModel):
     breaks_retired: int | None = None
 
 
+class RelatedRow(BaseModel):
+    """One line of a split settlement, as the matcher saw it."""
+
+    transaction_id: str
+    amount: Decimal
+    timestamp: datetime
+
+
 class BreakResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     break_id: UUID
@@ -76,7 +84,7 @@ class BreakResponse(BaseModel):
     source: Source
     ai_explanation: str | None = None
     confidence: Confidence | None = None
-    related_ids: list[str] | None = None
+    related_rows: list[RelatedRow] | None = None
 
 
 class UploadResponse(BaseModel):
@@ -158,6 +166,7 @@ class StatsResponse(BaseModel):
     total_transactions_in_statement: int
     total_breaks_detected: int
     total_breaks_resolved: int
+    ledger_rows_in_breaks: int = 0
     resolution_rate_pct: float
     breaks_by_type: list[BreakTypeStat]
     open_value: Decimal = Decimal("0")

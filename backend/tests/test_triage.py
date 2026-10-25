@@ -38,13 +38,17 @@ def test_split_settlement_and_reference_mismatch_survive_storage(client):
     found = by_type(client)
     split = found["SPLIT_SETTLEMENT"]
     assert split["transaction_id"] == "DEP-9"
-    assert split["related_ids"] == ["INV-1", "INV-2", "INV-3"]
+    assert split["related_rows"] == [
+        {"transaction_id": "INV-1", "amount": "120.1000", "timestamp": "2024-06-01T12:00:00Z"},
+        {"transaction_id": "INV-2", "amount": "75.2500", "timestamp": "2024-06-01T12:00:00Z"},
+        {"transaction_id": "INV-3", "amount": "301.6500", "timestamp": "2024-06-01T12:00:00Z"},
+    ]
     assert split["confidence"] == "medium"
     assert split["evidence_side"] == "many_internal"
     assert found["REFERENCE_MISMATCH"]["external_transaction_id"] == "BNK-77"
     assert found["MISSING_EXTERNAL"]["confidence"] == "high"
     exported = client.get("/breaks/export?source=uploaded&break_type=SPLIT_SETTLEMENT").text
-    assert "confidence,related_ids" in exported.splitlines()[0]
+    assert "confidence,related_rows" in exported.splitlines()[0]
     assert "INV-1 INV-2 INV-3" in exported
 
 
@@ -83,6 +87,8 @@ def test_stats_report_open_exposure_by_type_and_confidence(client):
         "SPLIT_SETTLEMENT": Decimal("497"),
     }
     assert Decimal(stats["open_value"]) == Decimal("791")
+    # 3 batch members, the fee, the reference pair and the lone row: all 6.
+    assert stats["ledger_rows_in_breaks"] == 6
     assert stats["open_by_confidence"] == [
         {"confidence": "medium", "open_count": 1},
         {"confidence": "high", "open_count": 3},

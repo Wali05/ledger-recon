@@ -54,7 +54,7 @@ EVIDENCE_FIELDS = (
     "external_timestamp",
     "description",
     "confidence",
-    "related_ids",
+    "related_rows",
 )
 
 

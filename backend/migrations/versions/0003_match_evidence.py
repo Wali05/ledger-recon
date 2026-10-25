@@ -11,11 +11,11 @@ depends_on = None
 
 def upgrade():
     op.add_column("reconciliation_breaks", sa.Column("confidence", sa.String(10)))
-    op.add_column("reconciliation_breaks", sa.Column("related_ids", sa.JSON()))
+    op.add_column("reconciliation_breaks", sa.Column("related_rows", sa.JSON()))
     op.add_column("reconciliation_jobs", sa.Column("breaks_retired", sa.Integer()))
 
 
 def downgrade():
     op.drop_column("reconciliation_jobs", "breaks_retired")
-    op.drop_column("reconciliation_breaks", "related_ids")
+    op.drop_column("reconciliation_breaks", "related_rows")
     op.drop_column("reconciliation_breaks", "confidence")

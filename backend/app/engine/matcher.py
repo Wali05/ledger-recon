@@ -92,7 +92,7 @@ class BreakRecord:
     evidence_side: str = "pair"
     occurrence: int = 0
     confidence: str = HIGH
-    related_ids: Optional[List[str]] = None
+    related_rows: Optional[List[dict]] = None
 
     @property
     def identity(self) -> str:
@@ -421,6 +421,18 @@ def _ids(rows) -> str:
     return ", ".join(row.transaction_id for row in rows)
 
 
+def _related(rows) -> List[dict]:
+    """JSON-safe evidence for the rows in a group, in ID order."""
+    return [
+        {
+            "transaction_id": row.transaction_id,
+            "amount": str(row.amount),
+            "timestamp": row.timestamp.isoformat().replace("+00:00", "Z"),
+        }
+        for row in sorted(rows, key=lambda row: row.transaction_id)
+    ]
+
+
 def run_matching(
     internal_rows: List[InternalRow],
     external_rows: List[ExternalRow],
@@ -668,7 +680,7 @@ def run_matching(
                 currency=best[0].currency,
                 evidence_side="many_internal",
                 confidence=LOW if ambiguous else MEDIUM,
-                related_ids=sorted(row.transaction_id for row in best),
+                related_rows=_related(best),
             )
         )
 
@@ -706,7 +718,7 @@ def run_matching(
                 currency=target.currency,
                 evidence_side="many_external",
                 confidence=LOW if ambiguous else MEDIUM,
-                related_ids=sorted(row.transaction_id for row in members),
+                related_rows=_related(members),
             )
         )
 

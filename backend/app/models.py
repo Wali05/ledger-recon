@@ -113,7 +113,7 @@ class ReconciliationBreak(Base):
     source = Column(String(20), nullable=False, default="synthetic")
     ai_explanation = Column(Text)
     confidence = Column(String(10))
-    related_ids = Column(JSON)
+    related_rows = Column(JSON)
     __table_args__ = (
         UniqueConstraint("source", "break_key", name="uq_break_source_key"),
         Index("ix_breaks_source_resolved_type", "source", "resolved", "break_type"),

@@ -130,13 +130,13 @@ EXPORT_FIELDS = [
     "evidence_side",
     "occurrence",
     "confidence",
-    "related_ids",
+    "related_rows",
 ]
 
 
 def csv_cell(value):
     if isinstance(value, list):
-        value = " ".join(value)
+        value = " ".join(row["transaction_id"] for row in value)
     if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
         return "'" + value
     return value.isoformat() if hasattr(value, "isoformat") else value
@@ -360,6 +360,19 @@ async def get_stats(
         open_value_by_type[row.break_type] = open_value_by_type.get(row.break_type, 0) + value
         level = row.confidence or "unrated"
         open_by_confidence[level] = open_by_confidence.get(level, 0) + 1
+    # Ledger rows that need a reviewer, so the rest tied out automatically.
+    # A batch deposit involves every ledger row in it; a bank-only break none.
+    sides = (
+        await session.execute(
+            select(Break.evidence_side, Break.related_rows).where(Break.source == source)
+        )
+    ).all()
+    ledger_rows_in_breaks = sum(
+        len(row.related_rows or [])
+        if row.evidence_side == "many_internal"
+        else int(row.evidence_side != "external")
+        for row in sides
+    )
     types = [
         BreakTypeStat(
             break_type=row.break_type,
@@ -376,6 +389,7 @@ async def get_stats(
         total_transactions_in_statement=state.statement_rows,
         total_breaks_detected=total,
         total_breaks_resolved=resolved,
+        ledger_rows_in_breaks=ledger_rows_in_breaks,
         resolution_rate_pct=round(100 * resolved / total, 2) if total else 0,
         breaks_by_type=types,
         open_value=sum(open_value_by_type.values(), Decimal("0")),

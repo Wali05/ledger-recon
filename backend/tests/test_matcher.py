@@ -341,6 +341,10 @@ def test_optimal_fallback_pairs_at_least_as_many_rows_as_greedy(seed):
 # ── Phase 3: split settlements ───────────────────────────────────────────────
 
 
+def _member_ids(record):
+    return [row["transaction_id"] for row in record.related_rows]
+
+
 def test_bank_batch_deposit_is_grouped_with_the_ledger_entries_it_settles():
     ledger = [
         internal("INV-1", "120.10"),
@@ -352,7 +356,7 @@ def test_bank_batch_deposit_is_grouped_with_the_ledger_entries_it_settles():
     breaks = run_matching(ledger, bank)
     split = next(row for row in breaks if row.break_type == SPLIT_SETTLEMENT)
     assert split.transaction_id == "DEP-9"
-    assert split.related_ids == ["INV-1", "INV-2", "INV-3"]
+    assert _member_ids(split) == ["INV-1", "INV-2", "INV-3"]
     assert split.internal_amount == split.external_amount == Decimal("497.00")
     assert split.evidence_side == "many_internal"
     assert split.confidence == MEDIUM
@@ -372,7 +376,7 @@ def test_ledger_entry_paid_in_instalments_is_grouped():
     )
     assert types_of(breaks) == [SPLIT_SETTLEMENT]
     assert breaks[0].transaction_id == "INV-7"
-    assert breaks[0].related_ids == ["PAY-A", "PAY-B"]
+    assert _member_ids(breaks[0]) == ["PAY-A", "PAY-B"]
     assert breaks[0].evidence_side == "many_external"
     assert breaks[0].currency == "EUR"
 
@@ -405,7 +409,7 @@ def test_split_prefers_fewest_parts_and_flags_ambiguity():
     ledger = [internal(name, amount) for name, amount in [("A", "10"), ("B", "20"), ("C", "30")]]
     fewest = run_matching(ledger + [internal("D", "40")], [external("X", "60")])
     split = next(row for row in fewest if row.break_type == SPLIT_SETTLEMENT)
-    assert split.related_ids == ["B", "D"]  # two parts beat A + B + C
+    assert _member_ids(split) == ["B", "D"]  # two parts beat A + B + C
     ambiguous = run_matching(
         ledger + [internal("E", "40"), internal("F", "50")], [external("X", "60")]
     )
