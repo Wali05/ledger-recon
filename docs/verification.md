@@ -1,6 +1,31 @@
 # Verification and release notes
 
-Results below were recorded on 11 October 2026 on Windows and Linux with Python 3.12, Node.js 22–24, PostgreSQL 16, Redis 7, a Celery worker and Chromium. They are local results, not a hosted deployment or a trial on bank data.
+Results below were recorded on Linux with Python 3.12, Node.js 22, PostgreSQL 16 and Chromium (v3, 25 October 2026), and on Windows and Linux with Redis 7 and a Celery worker as well (v2, 11 October 2026). They are local results, not a hosted deployment or a trial on bank data.
+
+## What changed in v3
+
+| Area | Change and how it is tested |
+| --- | --- |
+| Fallback pairing | Greedy closest-first replaced by a minimum-cost maximum matching per connected component. Brute force over every assignment on 40 random dense cases; never fewer pairs than greedy on 300×300 dense data; 10,000 mangled rows per side in about 0.1 s |
+| Split settlements | New `SPLIT_SETTLEMENT` for one line equal to the exact sum of 2–4 lines on the other side, in either direction. Tests for batches, instalments, near misses, date window, mixed currencies and signs, fewest parts and ambiguity; two unrelated 10,000-row files in about 1.3 s |
+| Reference mismatches | Same amount, same day, different reference is `REFERENCE_MISMATCH` instead of `UNKNOWN` |
+| Confidence | Every break carries a high/medium/low tier; tests pin each rule |
+| Sample data | The generator plants bank-side references, reference-plus-lag pairs, batched deposits and instalments |
+| Reruns | Evidence refreshes on existing breaks while review state is kept; breaks the rules no longer produce are retired with their history intact |
+| API | Search (`q`, with LIKE wildcards escaped), confidence filter and triage sort, bulk review of up to 500 breaks, open exposure and auto-tied ledger rows in `/stats` |
+| Dashboard | Rebuilt as a review workbench: overview, break mix, triage queue, keyboard review, bulk resolve, evidence drawer with grouped rows, light and dark themes |
+| Demo hosting | A GitHub Pages workflow publishes the static demo from `main` |
+
+### Engine comparison
+
+Both engines run on the same regenerated seed-42 sample (5,166 ledger rows, 5,180 bank lines, 167 planted problems):
+
+| | v2 greedy | v3 |
+| --- | --- | --- |
+| Breaks reported | 201 | 167 |
+| Micro precision / recall / F1 | 0.597 / 0.719 / 0.652 | 0.910 / 0.910 / 0.910 |
+
+v2 has no split pass, so each of the 12 split settlements surfaces as one missing row per member line, and it labels the 20 same-day bank-reference pairs `UNKNOWN`. To reproduce, save `git show 84b222e:backend/app/engine/matcher.py` as a module and score both with `app.engine.evaluation.compute_metrics` on the fixture from `scripts/evaluate_standalone.py`.
 
 ## What changed in v2
 
@@ -27,14 +52,16 @@ Results below were recorded on 11 October 2026 on Windows and Linux with Python 
 
 | Check | Local result |
 | --- | --- |
-| Matcher, auth/audit, real API and migration suite on SQLite | 80 passed |
-| Same suite with PostgreSQL 16 API storage | 80 passed |
+| Matcher, auth/audit, triage, real API and migration suite on SQLite | 136 passed (v3) |
+| Same suite with PostgreSQL 16 API storage | 136 passed (v3) |
 | Migrated schema compared with the models (Alembic autogenerate) | No drift on SQLite or PostgreSQL |
-| Browser-state and formatting unit tests | 6 passed |
-| Built demo in Chromium, desktop 1440 px and mobile 390 px | Passed: pagination, filters, sorting, evidence, resolve, replay, refresh, reset, export, Escape and no horizontal page overflow |
+| Demo adapter and formatting unit tests | 9 passed (v3) |
+| Built demo in Chromium, desktop 1440 px and mobile 390 px | Passed (v3): triage order, type/confidence/status filters, break-mix filter, search on group members, pagination, sorting, evidence, resolve with note, keyboard review, bulk resolve, replay, reload, theme persistence, reset, export, no horizontal page overflow and no API requests |
+| Connected browser → API on SQLite with `API_KEYS` | Passed (v3): wrong key rejected, sign-in, upload, run, resolve with note, reviewer in history, rerun, reload, filtered CSV |
+| Demo built for a subpath (`VITE_BASE=/ledger-recon/`) | Loads with no failed requests (v3) |
 | Connected browser → API → Redis/Celery → PostgreSQL | Passed: upload sample pair, 3 expected breaks, review, resolve, unchanged rerun, reload and filtered CSV. Re-run with `API_KEYS` set: wrong key rejected, sign-in, resolve with note, history shows the reviewer |
 | Upgrade of a live PostgreSQL database from the first to the second migration | Applied on API startup; existing breaks and resolutions kept |
-| Queued bundled sample, then unchanged rerun | 5,115 ledger rows, 130 detected; 130 inserted first run and 0 second run |
+| Queued bundled sample, then unchanged rerun | v2 sample: 5,115 ledger rows, 130 detected; 130 inserted first run and 0 second run |
 | Demo regeneration consistency | Committed JSON matches the seeded generator and current matcher |
 | Ruff, frontend lint/format and optimized build | Passed |
 | Dependency advisory scans | `pip-audit -r backend/requirements.txt` and full `npm audit` (including build tools): no known vulnerabilities at check time |
@@ -78,6 +105,6 @@ This test replaces the uploaded pair with fictional sample rows. It accepts only
 
 ## Evaluation and remaining gaps
 
-`python scripts/evaluate_standalone.py` generates temporary seed-42 fixtures and computes precision/recall/F1 from transaction/type pairs. It deliberately includes ambiguous small amount differences. Overall micro F1 is 0.885, but `FX_ROUNDING` F1 is only 0.571. A single overall score hides this weakness. No externally labelled dataset or operational workload has been evaluated. Duplicate occurrence retention has separate regression tests because the metric collapses repeated transaction/type labels.
+`python scripts/evaluate_standalone.py` generates temporary seed-42 fixtures and computes precision/recall/F1 from transaction/type pairs. Overall micro F1 is 0.910, but `FX_ROUNDING` F1 is only 0.571: the generator deliberately plants small fees on foreign-currency rows and FX differences above the threshold or on USD-normalised rows, which the available columns cannot separate. A single overall score would hide this weakness. The same author wrote the generator and the rules, so these scores check that the engine does what it was designed to do; no externally labelled dataset or operational workload has been evaluated. Duplicate occurrence retention has separate regression tests because the metric collapses repeated transaction/type labels.
 
-Before real use, the priority gaps are tenant boundaries and role-based permissions, dataset/history retention, independent labelled evaluation, and worker recovery/monitoring. See [architecture](architecture.md) for algorithmic and execution limits, and [deployment](deployment.md) for hosting options.
+Before real use, the priority gaps are tenant boundaries and role-based permissions, dataset/history retention, independent labelled evaluation, account-aware pairing, and worker recovery/monitoring. See [architecture](architecture.md) for algorithmic and execution limits, and [deployment](deployment.md) for hosting options.
